@@ -1,0 +1,20 @@
+source https://nuget.org/api/v2
+
+group Build
+  source https://nuget.org/api/v2
+  
+  nuget SourceLink.Fake
+  nuget FAKE
+  nuget FSharp.Formatting
+
+  github fsharp/FAKE modules/Octokit/Octokit.fsx
+
+#group Main
+#  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.cmd", Packages: /output/, OS:windows
+#  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.sh", Packages: /output/, OS:mono
+
+group Test
+  source https://nuget.org/api/v2
+  
+  nuget NUnit ~> 3
+  nuget NUnit.Runners ~> 3
