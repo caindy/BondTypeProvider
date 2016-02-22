@@ -11,7 +11,6 @@ open Bond.TypeProvider
 
 // Use type provider to create types from a file with marshaled runtime schema
 type Ty = SchemaTypeProvider<FilePath="unittest.schema.SingleField", Protocol=ProtocolType.COMPACT_PROTOCOL>
-(*
 let mkWriter strm : _ -> IProtocolWriter = function
 | ProtocolType.SIMPLE_PROTOCOL -> upcast new SimpleBinaryWriter<IOutputStream>(strm)
 | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryWriter<IOutputStream>(strm)
@@ -47,19 +46,19 @@ let inline deserializeUntagged p (data:ArraySegment<byte>) =
 let inline serializeCB obj =
     serialize ProtocolType.COMPACT_PROTOCOL obj
 
-let inline deserializeCB (data:ArraySegment<byte>) = 
+let inline deserializeCB (data:ArraySegment<byte>) =
     deserialize ProtocolType.COMPACT_PROTOCOL data
 
 let inline serializeFB obj =
     serialize ProtocolType.FAST_PROTOCOL obj
 
-let inline deserializeFB (data:ArraySegment<byte>) = 
+let inline deserializeFB (data:ArraySegment<byte>) =
     deserialize ProtocolType.FAST_PROTOCOL data
 
 let inline serializeSP obj =
     serialize ProtocolType.SIMPLE_PROTOCOL obj
 
-let inline deserializeSP (data:ArraySegment<byte>) = 
+let inline deserializeSP (data:ArraySegment<byte>) =
     deserializeUntagged ProtocolType.SIMPLE_PROTOCOL data
 
 let inline roundtripCB src =
@@ -80,8 +79,9 @@ let inline testRoundtripFB (src : 'a) =
 let inline testRoundtripSP (src : 'a) =
     Assert.AreEqual(src, (roundtripSP src : 'a))
 
+    (*
 [<TestFixture>]
-type UnitTest() = 
+type UnitTest() =
     let initSingleField = Ty.SingleField
                             ("test")
     let initBasicTypes1 = Ty.BasicTypes1
@@ -95,113 +95,113 @@ type UnitTest() =
     let initBasicTypes  = Ty.BasicTypes
                             (true, "test", "test", 1uy, 3200us, 0xFFFFFu, 0xFFFFFFFF1UL, -1y, 10s, 1000, -32L, 3.14, 6.28f, 5)
     let initContainers  = Ty.Containers
-                            (["one", 1ul; "two", 2ul] |> Map.ofList, 
+                            (["one", 1ul; "two", 2ul] |> Map.ofList,
                             set ["one"; "two"])
     let initTests       = Ty.Tests
-                            (t1 = initSingleField, 
-                             t2 = initBasicTypes1, 
-                             t3 = initBasicTypes2, 
-                             t4 = initLists, 
-                             t5 = initNullable, 
+                            (t1 = initSingleField,
+                             t2 = initBasicTypes1,
+                             t3 = initBasicTypes2,
+                             t4 = initLists,
+                             t5 = initNullable,
                              t6 = initBasicTypes,
                              t7 = initContainers)
-    
+
     // TODO: no-fields schemas not supported
-    
+
 
     // SingleField
     [<Test>]
-    member x.CB_TestSingleField () = 
+    member x.CB_TestSingleField () =
         testRoundtripCB initSingleField
 
     [<Test>]
-    member x.SP_TestSingleField () = 
+    member x.SP_TestSingleField () =
         testRoundtripSP initSingleField
 
     [<Test>]
-    member x.FB_TestSingleField () = 
+    member x.FB_TestSingleField () =
         testRoundtripFB initSingleField
 
     // BasicTypes
     [<Test>]
-    member x.CB_TestBasicTypes () = 
+    member x.CB_TestBasicTypes () =
         testRoundtripCB initBasicTypes
 
     [<Test>]
-    member x.SP_TestBasicTypes () = 
+    member x.SP_TestBasicTypes () =
         testRoundtripSP initBasicTypes
 
     [<Test>]
-    member x.FB_TestBasicTypes () = 
+    member x.FB_TestBasicTypes () =
         testRoundtripFB initBasicTypes
-    
+
     // Lists
     [<Test>]
-    member x.CB_TestLists () = 
+    member x.CB_TestLists () =
         testRoundtripCB initLists
 
     [<Test>]
-    member x.SP_TestLists () = 
+    member x.SP_TestLists () =
         testRoundtripSP initLists
 
     [<Test>]
-    member x.FB_TestLists () = 
+    member x.FB_TestLists () =
         testRoundtripFB initLists
 
     // Nullable
     [<Test>]
-    member x.CB_TestNullable () = 
+    member x.CB_TestNullable () =
         testRoundtripCB initNullable
 
     [<Test>]
-    member x.SP_TestNullable () = 
+    member x.SP_TestNullable () =
         testRoundtripSP initNullable
 
     [<Test>]
-    member x.FB_TestNullable () = 
+    member x.FB_TestNullable () =
         testRoundtripFB initNullable
 
     // Tests
     [<Test>]
-    member x.CB_TestTests () = 
+    member x.CB_TestTests () =
         testRoundtripCB initTests
 
     [<Test>]
-    member x.SP_TestTests () = 
+    member x.SP_TestTests () =
         testRoundtripSP initTests
 
     [<Test>]
-    member x.FB_TestTests () = 
+    member x.FB_TestTests () =
         testRoundtripFB initTests
-    
+
     // Containers
     [<Test>]
-    member x.CB_TestContainers () = 
+    member x.CB_TestContainers () =
         testRoundtripCB initContainers
 
     [<Test>]
-    member x.SP_TestContainers () = 
+    member x.SP_TestContainers () =
         testRoundtripSP initContainers
 
     [<Test>]
-    member x.FB_TestContainers () = 
+    member x.FB_TestContainers () =
         testRoundtripFB initContainers
 
     // Empty Containers
     [<Test>]
-    member x.CB_TestEmptyContainers () = 
+    member x.CB_TestEmptyContainers () =
         testRoundtripCB (Ty.Containers())
 
     [<Test>]
-    member x.SP_TestEmptyContainers () = 
+    member x.SP_TestEmptyContainers () =
         testRoundtripSP (Ty.Containers())
 
     [<Test>]
-    member x.FB_TestEmptyContainers () = 
+    member x.FB_TestEmptyContainers () =
         testRoundtripFB (Ty.Containers())
-        
+
     [<Test>]
-    member x.TestDefaultValues () = 
+    member x.TestDefaultValues () =
         // Verify Fs default values
         let initDefault = Ty.BasicTypes()
         Assert.AreEqual(true, initDefault.m_bool)
@@ -220,7 +220,7 @@ type UnitTest() =
         Assert.AreEqual(int32 -10, initDefault.m_enum1)
 
     [<Test>]
-    member x.CB_TestViews () = 
+    member x.CB_TestViews () =
         let src = initBasicTypes
         let dst = roundtripCB src : Ty.BasicTypes2
         Assert.AreEqual(src.m_uint8, dst.m_uint8)
@@ -240,7 +240,7 @@ type UnitTest() =
         Assert.AreEqual(src.m_int64, dst.m_int64)
 
     [<Test>]
-    member x.FB_TestViews () = 
+    member x.FB_TestViews () =
         let src = initBasicTypes
         let dst = roundtripFB src : Ty.BasicTypes2
         Assert.AreEqual(src.m_uint8, dst.m_uint8)
