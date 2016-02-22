@@ -9,7 +9,9 @@ group Build
 
   github fsharp/FAKE modules/Octokit/Octokit.fsx
 
-#group Main
+group Main
+  nuget Bond.Runtime.CSharp ~> 4
+  
 #  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.cmd", Packages: /output/, OS:windows
 #  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.sh", Packages: /output/, OS:mono
 

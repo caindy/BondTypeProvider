@@ -1,13 +1,12 @@
-
-GIT
-  remote: https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git
+NUGET
+  remote: https://www.nuget.org/api/v2
   specs:
-     (77fda2a5ce7efbcc84011210553924af5ff961b3)
-      build: build.cmd
-      os: windows
-     (77fda2a5ce7efbcc84011210553924af5ff961b3)
-      build: build.sh
-      os: mono
+    Bond.Core.CSharp (4.0.2)
+    Bond.Runtime.CSharp (4.0.2)
+      Bond.Core.CSharp (4.0.2)
+      Newtonsoft.Json (>= 7.0.1)
+    Newtonsoft.Json (8.0.2)
+
 GROUP Build
 NUGET
   remote: https://www.nuget.org/api/v2
@@ -37,5 +36,7 @@ GROUP Test
 NUGET
   remote: https://www.nuget.org/api/v2
   specs:
-    NUnit (2.6.4)
-    NUnit.Runners (2.6.4)
+    NUnit (3.0.1)
+    NUnit.Console (3.0.1)
+    NUnit.Runners (3.0.1)
+      NUnit.Console (3.0.1)

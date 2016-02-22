@@ -1,3 +1,6 @@
+group Main
+Bond.Runtime.CSharp
+
 group Test
 NUnit
 NUnit.Runners
