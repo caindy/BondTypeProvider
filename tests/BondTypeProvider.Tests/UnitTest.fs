@@ -10,7 +10,7 @@ open Bond.IO.Unsafe
 open Bond.TypeProvider
 
 // Use type provider to create types from a file with marshaled runtime schema
-type Ty = SchemaTypeProvider<FilePath="unittest.schema.SingleField", Protocol=ProtocolType.MARSHALED_PROTOCOL>
+type Ty = SchemaTypeProvider<FilePath="unittest.schema.SingleField", Protocol=ProtocolType.COMPACT_PROTOCOL>
 (*
 let mkWriter strm : _ -> IProtocolWriter = function
 | ProtocolType.SIMPLE_PROTOCOL -> upcast new SimpleBinaryWriter<IOutputStream>(strm)
