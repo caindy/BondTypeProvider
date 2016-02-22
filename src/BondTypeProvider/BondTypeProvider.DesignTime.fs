@@ -1,41 +1,5 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
-
-namespace Bond.TypeProvider
-
-namespace Quotations
-type internal Helper =
-    /// <summary>Makes a quotation of the form
-    /// <code>
-    ///   for v in s do
-    ///     body</code></summary>
-    static member MakeFor<'a,'b when 'a :> seq<'b>>(v, s, body) =
-        let q = <@@ for el in (%%s : 'a) do
-                        %%body @@>
-        // replace 'el' variable with v, leaving everything else the same
-        // we know that q is of the form 
-        //     let inputSequence = s
-        //     let enumerator = inputSequence.GetEnumerator()
-        //     try
-        //         while enumerator.MoveNext() do
-        //             let el = enumerator.Current
-        //             ...
-        //     finally
-        //         ...
-        let (Quotations.Patterns.Let(v0,e0,Quotations.Patterns.Let(v1,e1,Quotations.Patterns.TryFinally(Quotations.Patterns.WhileLoop(e2, Quotations.Patterns.Let(v3,e3,b3)), e4)))) = q
-        Quotations.Expr.Let(v0,e0,Quotations.Expr.Let(v1,e1,Quotations.Expr.TryFinally(Quotations.Expr.WhileLoop(e2, Quotations.Expr.Let(v,e3,b3)), e4)))
-        
-
-module Expr =
-    /// <summary>Makes a quotation of the form
-    /// <code>
-    ///   for v in s do
-    ///     body</code></summary>
-    let internal For(v:Quotations.Var, s:Quotations.Expr, b:Quotations.Expr) =
-        let seqTy = s.Type
-        let eltTy = seqTy.GetInterface("System.Collections.Generic.IEnumerable`1").GetGenericArguments().[0]
-        typeof<Helper>.GetMethod("MakeFor", enum 0xffffffff).MakeGenericMethod(seqTy, eltTy).Invoke(null, [|v;s;b|]) :?> Quotations.Expr
-        
 namespace Bond.TypeProvider.DesignTime
 
 open System
@@ -47,60 +11,59 @@ open Microsoft.FSharp.Core.CompilerServices
 open Bond
 open Bond.Protocols
 open Bond.IO.Unsafe
-open Bond.TypeProvider
+open Bond.TypeProvider.Quotations
 
-// Hard to create quotations calling methods with out arguments, so wrap instead
-module RuntimeHelpers = 
-    let ReadFieldBegin(reader : ITaggedProtocolReader) =
-        reader.ReadFieldBegin()
-        
-    let ReadContainerBegin(reader : ITaggedProtocolReader) : _*_ =
-        reader.ReadContainerBegin()
-        
-    let ReadKeyValueContainerBegin(reader : ITaggedProtocolReader) : _*_*_ =
-        reader.ReadContainerBegin()
+// Hard to create quotations calling methods without arguments, so wrap instead
+module RuntimeHelpers =
+  let ReadFieldBegin(reader : ITaggedProtocolReader) =
+      reader.ReadFieldBegin()
+
+  let ReadContainerBegin(reader : ITaggedProtocolReader) : _*_ =
+      reader.ReadContainerBegin()
+
+  let ReadKeyValueContainerBegin(reader : ITaggedProtocolReader) : _*_*_ =
+      reader.ReadContainerBegin()
 
 type private fieldInfo = { id : uint16; metadata : Metadata; defaultExpr : Quotations.Expr; defaultValue : obj; fieldType : TypeDef }
 
 /// Convert SchemaDefs (and their components) to equivalent quotation literals
-module private SchemaQuotation = 
+module private SchemaQuotation =
+  /// Given a function for converting list elements to quotations and a list of values, generate a quoted list
+  let rec private qList f = function
+  | [] -> <@ [] @>
+  | x::xs -> <@ %(f x) :: %(qList f xs) @>
 
-    /// Given a function for converting list elements to quotations and a list of values, generate a quoted list 
-    let rec private qList f = function
-    | [] -> <@ [] @>
-    | x::xs -> <@ %(f x) :: %(qList f xs) @>
+  /// Given a dictionary, generate a quotation building an equivalent dictionary
+  let private quoteDict d =
+      <@ Dictionary(dict %(d |> List.ofSeq |> qList (fun (KeyValue(k,v)) -> <@ k, v @>))) @>
 
-    /// Given a dictionary, generate a quotation building an equivalent dictionary
-    let private quoteDict d =
-        <@ System.Collections.Generic.Dictionary(dict %(d |> List.ofSeq |> qList (fun (KeyValue(k,v)) -> <@ k, v @>))) @>
+  /// Given a Variant, produce an equivalent quotation
+  let quoteVariant (v:Variant) =
+      if v.nothing then
+          <@ Variant(nothing = true) @>
+      elif v.int_value <> 0L then
+          let v = v.int_value in <@ Variant(int_value = v) @>
+      elif v.uint_value <> 0uL then
+          let v = v.uint_value in <@ Variant(uint_value = v) @>
+      elif v.double_value <> 0.0 then
+          let v = v.double_value in <@ Variant(double_value = v) @>
+      elif v.string_value <> "" then
+          let v = v.string_value in <@ Variant(string_value = v) @>
+      elif v.wstring_value <> "" then
+          let v = v.wstring_value in <@ Variant(wstring_value = v) @>
+      else
+          <@ Variant() @>
 
-    /// Given a Variant, produce an equivalent quotation
-    let quoteVariant (v:Variant) =
-        if v.nothing then 
-            <@ Variant(nothing = true) @>
-        elif v.int_value <> 0L then
-                let v = v.int_value in <@ Variant(int_value = v) @>
-        elif v.uint_value <> 0uL then
-                let v = v.uint_value in <@ Variant(uint_value = v) @>
-        elif v.double_value <> 0.0 then
-                let v = v.double_value in <@ Variant(double_value = v) @>
-        elif v.string_value <> "" then
-                let v = v.string_value in <@ Variant(string_value = v) @>
-        elif v.wstring_value <> "" then
-                let v = v.wstring_value in <@ Variant(wstring_value = v) @>
-        else 
-            <@ Variant() @>
-
-    /// Given a Metadata, produce an equivalent quotation
-    let quoteMetadata (m:Metadata) =
-        let qn = m.qualified_name
-        let nm = m.name
-        let md = m.modifier
-        <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
+  /// Given a Metadata, produce an equivalent quotation
+  let quoteMetadata (m : Metadata) =
+      let qn = m.qualified_name
+      let nm = m.name
+      let md = m.modifier
+      <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
 
 
 [<TypeProvider>]
-type public BondTypeProvider(cfg:TypeProviderConfig) =
+type public BondTypeProvider(cfg : TypeProviderConfig) =
     inherit TypeProviderForNamespaces()
 
     // TODO: Is there a better way to enable quotation deserialization to find Bond.dll types?  This seems brittle.
@@ -108,62 +71,62 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
     static do System.AppDomain.CurrentDomain.add_AssemblyResolve(fun _ ev -> printfn "%s" ev.Name; match asms |> List.tryFind (fun asm -> asm.FullName = ev.Name) with | Some asm -> asm | None -> null)
 
     let memo f =
-        let d = System.Collections.Generic.Dictionary(HashIdentity.Structural)
+        let d = Dictionary(HashIdentity.Structural)
         fun x y ->
-            if not <| d.ContainsKey(x,y) then
+            if not <| d.ContainsKey (x,y) then
                 d.[(x,y)] <- f x y
             d.[(x,y)]
 
     let runtimeAssembly = typeof<BondTypeProvider>.Assembly
 
     let ns = "Bond.TypeProvider"
-    let schemaTy = ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", None)
-    let filename = ProvidedStaticParameter("FilePath", typeof<string>)
-    let protTy = ProvidedStaticParameter("Protocol", typeof<ProtocolType>, int ProtocolType.MARSHALED_PROTOCOL)
+    let ctxt = ProviderImplementation.ProvidedTypesContext.Create(cfg)
+    let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", Some typeof<obj>)
+    let filename = ctxt.ProvidedStaticParameter("FilePath", typeof<string>)
+    let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // , int ProtocolType.MARSHALED_PROTOCOL)
     let helpText = """<summary>Typed representation of a Bond schema</summary>
                       <param name='FilePath'>Bond SchemaDef location</param>
                       <param name='Protocol'>Schema serialization protocol (marshalled by default)</param>"""
 
     do schemaTy.AddXmlDoc helpText
     do schemaTy.DefineStaticParameters([filename; protTy;], memo (fun tyName [| :? string as filename; :? int as prot; |] ->
-        
         let uri =
             if Uri.IsWellFormedUriString(filename, UriKind.Relative) then
                 Uri(Path.Combine(Path.Combine(cfg.ResolutionFolder, filename)))
             else // note: this just works for full paths even without leading "file:///"
-                System.Uri(filename)
+                Uri(filename)
 
         /// the SchemaDef that we will reflect as provided types
         let schemaContents =
             // Deserialize the SchemaDef from the Uri using the relevant ITaggedProtocolReader
-            use strm = 
+            use strm =
                 if uri.IsFile then
                     File.OpenRead(uri.LocalPath) :> Stream
                 else
                     let client = new System.Net.WebClient()
                     let content = client.DownloadData(uri)
                     new MemoryStream(content) :> _
-            let def = 
+            let def =
                 if enum prot = ProtocolType.MARSHALED_PROTOCOL then
                     Unmarshal<SchemaDef>.From(new InputStream(strm))
                 else
-                    let rdr : ITaggedProtocolReader = 
+                    let rdr : ITaggedProtocolReader =
                         match enum prot with
-                        | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryReader<InputStream>(new InputStream(strm)) 
+                        | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryReader<InputStream>(new InputStream(strm))
                         | ProtocolType.FAST_PROTOCOL -> upcast new FastBinaryReader<InputStream>(new InputStream(strm))
                         | p -> failwithf "Unrecognized protocol : %A" p
                     Deserialize<SchemaDef>.From(rdr)
             def
 
         /// maps struct IDs to provided type
-        let provTys = System.Collections.Generic.Dictionary()
-        
+        let provTys = Dictionary()
+
         /// maps struct i => Tuple<...>
-        let tupTys = System.Collections.Generic.Dictionary()
+        let tupTys = Dictionary()
 
         /// transitive closure of related struct indices
-        let structsFrom (s:SchemaDef) idx =
-            let rec structComponents (t:TypeDef) = 
+        let structsFrom (s : SchemaDef) idx =
+            let rec structComponents (t : TypeDef) =
                 if t.id = BondDataType.BT_STRUCT then Set.singleton t.struct_def
                 elif t.element = null then Set.empty
                 else
@@ -176,55 +139,55 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         Set.singleton t.struct_def
                     | _ -> Set.empty
             let rec loop seen idx =
-                let frontier = 
+                let frontier =
                     s.structs.[int idx].fields
                     |> Seq.map (fun f -> structComponents f.``type``)
                     |> Set.unionMany
                 if Set.isSubset frontier seen then seen
-                else 
+                else
                     frontier - seen
                     |> Set.fold loop (Set.union seen frontier)
-            loop Set.empty idx        
-        
+            loop Set.empty idx
+
         /// gets the representation type and full (unerased) type corresponding to the given TypeDef
-        let rec typeForBondType (t:TypeDef) =
+        let rec typeForBondType (t : TypeDef) =
             match t.id with
-            | BondDataType.BT_BOOL ->    typeof<bool>   , typeof<bool>      
-            | BondDataType.BT_DOUBLE ->  typeof<float>  , typeof<float>     
-            | BondDataType.BT_FLOAT ->   typeof<float32>, typeof<float32>   
-            | BondDataType.BT_INT16 ->   typeof<int16>  , typeof<int16>     
-            | BondDataType.BT_INT32 ->   typeof<int>    , typeof<int>       
-            | BondDataType.BT_INT64 ->   typeof<int64>  , typeof<int64>     
-            | BondDataType.BT_INT8  ->   typeof<sbyte>  , typeof<sbyte>     
-            | BondDataType.BT_UINT16 ->  typeof<uint16> , typeof<uint16>   
-            | BondDataType.BT_UINT32 ->  typeof<uint32> , typeof<uint32>    
-            | BondDataType.BT_UINT64 ->  typeof<uint64> , typeof<uint64>    
-            | BondDataType.BT_UINT8  ->  typeof<byte>   , typeof<byte>      
-            | BondDataType.BT_STRING ->  typeof<string> , typeof<string>    
-            | BondDataType.BT_WSTRING -> typeof<string> , typeof<string>  
+            | BondDataType.BT_BOOL ->    typeof<bool>   , typeof<bool>
+            | BondDataType.BT_DOUBLE ->  typeof<float>  , typeof<float>
+            | BondDataType.BT_FLOAT ->   typeof<float32>, typeof<float32>
+            | BondDataType.BT_INT16 ->   typeof<int16>  , typeof<int16>
+            | BondDataType.BT_INT32 ->   typeof<int>    , typeof<int>
+            | BondDataType.BT_INT64 ->   typeof<int64>  , typeof<int64>
+            | BondDataType.BT_INT8  ->   typeof<sbyte>  , typeof<sbyte>
+            | BondDataType.BT_UINT16 ->  typeof<uint16> , typeof<uint16>
+            | BondDataType.BT_UINT32 ->  typeof<uint32> , typeof<uint32>
+            | BondDataType.BT_UINT64 ->  typeof<uint64> , typeof<uint64>
+            | BondDataType.BT_UINT8  ->  typeof<byte>   , typeof<byte>
+            | BondDataType.BT_STRING ->  typeof<string> , typeof<string>
+            | BondDataType.BT_WSTRING -> typeof<string> , typeof<string>
             | BondDataType.BT_STRUCT -> typeof<obj>, provTys.[t.struct_def]
-            | BondDataType.BT_LIST -> 
-                let mkTy t = 
+            | BondDataType.BT_LIST ->
+                let mkTy t =
                     let tyDef = typedefof<_ list>
                     tyDef.MakeGenericType([|t|])
-                let repr, full = typeForBondType t.element                                      
+                let repr, full = typeForBondType t.element
                 mkTy repr, mkTy full
-            | BondDataType.BT_MAP -> 
-                let mkTy k v = 
+            | BondDataType.BT_MAP ->
+                let mkTy k v =
                     let tyDef = typedefof<Map<_,_>>
                     tyDef.MakeGenericType([|k;v|])
                 let krepr, kfull = typeForBondType t.key
                 let vrepr, vfull = typeForBondType t.element
                 mkTy krepr vrepr, mkTy kfull vfull
-            | BondDataType.BT_SET -> 
-                let mkTy t = 
+            | BondDataType.BT_SET ->
+                let mkTy t =
                     let tyDef = typedefof<Set<_>>
                     tyDef.MakeGenericType([|t|])
                 let repr, full = typeForBondType t.element
                 mkTy repr, mkTy full
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
         let zeroCreate ty = match <@ Array.zeroCreate 0 @> with | Quotations.Patterns.Call(None,zeroCreate,[_]) -> zeroCreate.GetGenericMethodDefinition().MakeGenericMethod([|ty|])
@@ -237,7 +200,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             // produces a quotation like:
             //    <@ let arr = Array.zeroCreate<_> (int ct)
             //       for i = 0 to ct - 1 do
-            //           arr.[i] <- readEl 
+            //           arr.[i] <- readEl
             //       readEnd
             //       arr@>
             let arrRep = (elRep : Type).MakeArrayType()
@@ -245,7 +208,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             let i = Quotations.Var("i", typeof<int>)
             Quotations.Expr.Let(arr, Quotations.Expr.Call(zeroCreate elRep, [ Quotations.Expr.Var ct ]),
                 Quotations.Expr.Sequential(
-                    Quotations.Expr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(Quotations.Expr.Var ct) : int) - 1 @>, 
+                    Quotations.Expr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(Quotations.Expr.Var ct) : int) - 1 @>,
                         Quotations.Expr.Call(setArray elRep, [Quotations.Expr.Var arr; Quotations.Expr.Var i; readEl])),
                     Quotations.Expr.Sequential(
                         readEnd, Quotations.Expr.Var arr)))
@@ -263,31 +226,31 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             let i = Quotations.Var("i", typeof<int>)
             Quotations.Expr.Let(arr, Quotations.Expr.Call(zeroCreate tupRep, [ Quotations.Expr.Var ct ]),
                 Quotations.Expr.Sequential(
-                    Quotations.Expr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(Quotations.Expr.Var ct) : int) - 1 @>, 
+                    Quotations.Expr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(Quotations.Expr.Var ct) : int) - 1 @>,
                         Quotations.Expr.Call(setArray tupRep, [Quotations.Expr.Var arr; Quotations.Expr.Var i; Quotations.Expr.NewTuple [readKey; readVal]])),
                     Quotations.Expr.Sequential(
                         readEnd, Quotations.Expr.Var arr)))
 
-        /// Given a TypeDef, an expression for an ITaggedProtocolReader and a dictionary mapping struct IDs to readers, 
+        /// Given a TypeDef, an expression for an ITaggedProtocolReader and a dictionary mapping struct IDs to readers,
         /// produces an expression that reads the corresponding type of value from a reader
         // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-        let rec taggedReader (t:TypeDef) : Quotations.Expr<ITaggedProtocolReader> -> IDictionary<uint16,_> -> _ = 
+        let rec taggedReader (t:TypeDef) : Quotations.Expr<ITaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
             match t.id with
-            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>  
+            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
             | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
-            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@> 
-            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@> 
-            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@> 
-            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@> 
-            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@> 
+            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@>
+            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@>
+            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@>
+            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@>
+            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@>
             | BondDataType.BT_UINT16 ->  fun rdr _ -> <@@ (%rdr).ReadUInt16() @@>
             | BondDataType.BT_UINT32 ->  fun rdr _ -> <@@ (%rdr).ReadUInt32() @@>
             | BondDataType.BT_UINT64 ->  fun rdr _ -> <@@ (%rdr).ReadUInt64() @@>
-            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@> 
+            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@>
             | BondDataType.BT_STRING ->  fun rdr _ -> <@@ (%rdr).ReadString() @@>
             | BondDataType.BT_WSTRING -> fun rdr _ -> <@@ (%rdr).ReadWString() @@>
             | BondDataType.BT_STRUCT ->  fun rdr d -> d.[t.struct_def] rdr
-            | BondDataType.BT_LIST 
+            | BondDataType.BT_LIST
             | BondDataType.BT_SET ->
                     // produces a quotation like:
                     //    <@ let ct,_ = Helpers.ReadContainerBegin(rdr)
@@ -301,11 +264,11 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                     fun rdr provFns ->
                         let read = taggedReader t.element rdr provFns
                         let ct = Quotations.Var("ct", typeof<int>)
-                        Quotations.Expr.Let(ct, Quotations.Expr.TupleGet(<@@ RuntimeHelpers.ReadContainerBegin %rdr @@>, 0), 
+                        Quotations.Expr.Let(ct, Quotations.Expr.TupleGet(<@@ RuntimeHelpers.ReadContainerBegin %rdr @@>, 0),
                             Quotations.Expr.Call(convertArray,
                                 [readContainer ct elRep read <@@ (%rdr).ReadContainerEnd() @@>]))
 
-            | BondDataType.BT_MAP -> 
+            | BondDataType.BT_MAP ->
                     // produces a quotation like:
                     //    <@ let ct,_,_ = Helpers.ReadKeyValueContainerBegin(rdr)
                     //       let arr = Array.zeroCreate<_*_> (int ct)
@@ -319,36 +282,36 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         let readKey = taggedReader t.key rdr provFns
                         let readEl = taggedReader t.element rdr provFns
                         let ct = Quotations.Var("ct", typeof<int>)
-                        Quotations.Expr.Let(ct, Quotations.Expr.TupleGet(<@@ RuntimeHelpers.ReadKeyValueContainerBegin %rdr @@>, 0), 
-                            Quotations.Expr.Call(mapOfArray keyRep elRep, 
+                        Quotations.Expr.Let(ct, Quotations.Expr.TupleGet(<@@ RuntimeHelpers.ReadKeyValueContainerBegin %rdr @@>, 0),
+                            Quotations.Expr.Call(mapOfArray keyRep elRep,
                                 [readKeyValueContainer ct keyRep elRep readKey readEl <@@ (%rdr).ReadContainerEnd() @@>]))
 
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
 
-        /// Given a TypeDef, an expression for an IUntaggedProtocolReader and a dictionary mapping struct IDs to readers, 
+        /// Given a TypeDef, an expression for an IUntaggedProtocolReader and a dictionary mapping struct IDs to readers,
         /// produces an expression that reads the corresponding type of value from a reader
         // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-        let rec untaggedReader (t:TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ = 
+        let rec untaggedReader (t:TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
             match t.id with
-            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>  
+            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
             | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
-            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@> 
-            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@> 
-            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@> 
-            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@> 
-            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@> 
+            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@>
+            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@>
+            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@>
+            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@>
+            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@>
             | BondDataType.BT_UINT16 ->  fun rdr _ -> <@@ (%rdr).ReadUInt16() @@>
             | BondDataType.BT_UINT32 ->  fun rdr _ -> <@@ (%rdr).ReadUInt32() @@>
             | BondDataType.BT_UINT64 ->  fun rdr _ -> <@@ (%rdr).ReadUInt64() @@>
-            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@> 
+            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@>
             | BondDataType.BT_STRING ->  fun rdr _ -> <@@ (%rdr).ReadString() @@>
             | BondDataType.BT_WSTRING -> fun rdr _ -> <@@ (%rdr).ReadWString() @@>
             | BondDataType.BT_STRUCT ->  fun rdr d -> d.[t.struct_def] rdr
-            | BondDataType.BT_LIST 
+            | BondDataType.BT_LIST
             | BondDataType.BT_SET ->
                     // produces a quotation like:
                     //    <@ let ct,_ = rdr.ReadContainerBegin()
@@ -362,11 +325,11 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                     fun rdr provFns ->
                         let read = untaggedReader t.element rdr provFns
                         let ct = Quotations.Var("ct", typeof<int>)
-                        Quotations.Expr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>, 
+                        Quotations.Expr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
                             Quotations.Expr.Call(convertArray,
                                 [readContainer ct elRep read <@@ (%rdr).ReadContainerEnd() @@>]))
 
-            | BondDataType.BT_MAP -> 
+            | BondDataType.BT_MAP ->
                     // produces a quotation like:
                     //    <@ let ct,_,_ = rdr.ReadContainerBegin()
                     //       let arr = Array.zeroCreate<_*_> (int ct)
@@ -380,13 +343,13 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         let readKey = untaggedReader t.key rdr provFns
                         let readEl = untaggedReader t.element rdr provFns
                         let ct = Quotations.Var("ct", typeof<int>)
-                        Quotations.Expr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>, 
-                            Quotations.Expr.Call(mapOfArray keyRep elRep, 
+                        Quotations.Expr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
+                            Quotations.Expr.Call(mapOfArray keyRep elRep,
                                 [readKeyValueContainer ct keyRep elRep readKey readEl <@@ (%rdr).ReadContainerEnd() @@>]))
 
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
 
@@ -406,8 +369,8 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             | BondDataType.BT_UINT8  ->  fun wrtr e _ -> <@@ (%wrtr).WriteUInt8(%%e) @@>
             | BondDataType.BT_STRING ->  fun wrtr e _ -> <@@ (%wrtr).WriteString(%%e) @@>
             | BondDataType.BT_WSTRING -> fun wrtr e _ -> <@@ (%wrtr).WriteWString(%%e) @@>
-            | BondDataType.BT_STRUCT ->  fun wrtr e d -> d.[t.struct_def] wrtr e 
-            | BondDataType.BT_LIST -> 
+            | BondDataType.BT_STRUCT ->  fun wrtr e d -> d.[t.struct_def] wrtr e
+            | BondDataType.BT_LIST ->
                 // produces a quotation like:
                 //    <@ wrtr.WriteContainerBegin(l.Count, dataType)
                 //       for e in l do
@@ -424,9 +387,9 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         <@@ (%wrtr).WriteContainerBegin((%%Quotations.Expr.PropertyGet(lstExpr, lenProp) : int), dataType) @@>,
                         Quotations.Expr.Sequential(
                             let e = Quotations.Var("e", elRep)
-                            Quotations.Expr.For(e, lstExpr, write (Quotations.Expr.Var e)),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))                            
-            | BondDataType.BT_SET ->                 
+                            Expr.For(e, lstExpr, write (Quotations.Expr.Var e)),
+                            <@@ (%wrtr).WriteContainerEnd() @@>))
+            | BondDataType.BT_SET ->
                 // produces a quotation like:
                 //    <@ wrtr.WriteContainerBegin(s.Count, dataType)
                 //       for e in s do
@@ -443,10 +406,10 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         <@@ (%wrtr).WriteContainerBegin((%%Quotations.Expr.PropertyGet(setExpr, lenProp) : int), dataType) @@>,
                         Quotations.Expr.Sequential(
                             let e = Quotations.Var("e", elRep)
-                            Quotations.Expr.For(e, setExpr, write (Quotations.Expr.Var e)),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))                            
+                            Expr.For(e, setExpr, write (Quotations.Expr.Var e)),
+                            <@@ (%wrtr).WriteContainerEnd() @@>))
 
-            | BondDataType.BT_MAP -> 
+            | BondDataType.BT_MAP ->
                 // produces a quotation like:
                 //    <@ wrtr.WriteContainerBegin(s.Count, keyDataType, elDataType)
                 //       for e in s do
@@ -468,26 +431,26 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         Quotations.Expr.Sequential(
                             let itemType = typedefof<KeyValuePair<_,_>>.MakeGenericType(keyRep, elRep)
                             let kvp = Quotations.Var("kvp", itemType)
-                            Quotations.Expr.For(kvp, dictExpr, Quotations.Expr.Sequential(writeKey (Quotations.Expr.PropertyGet(Quotations.Expr.Var kvp, itemType.GetProperty("Key"))), writeEl (Quotations.Expr.PropertyGet(Quotations.Expr.Var kvp, itemType.GetProperty("Value"))))),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))                            
+                            Expr.For(kvp, dictExpr, Quotations.Expr.Sequential(writeKey (Quotations.Expr.PropertyGet(Quotations.Expr.Var kvp, itemType.GetProperty("Key"))), writeEl (Quotations.Expr.PropertyGet(Quotations.Expr.Var kvp, itemType.GetProperty("Value"))))),
+                            <@@ (%wrtr).WriteContainerEnd() @@>))
 
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
         let rootStruct = schemaContents.structs.[int schemaContents.root.struct_def]
 
-        let containerTy = ProvidedTypeDefinition(runtimeAssembly, ns, tyName, None)
+        let containerTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, tyName, None)
 
         let bondTyIsContainer = function
         | BondDataType.BT_LIST | BondDataType.BT_SET | BondDataType.BT_MAP -> true
         | _ -> false
 
-        let rec defaultExpr (t:TypeDef) (v:Variant) = 
+        let rec defaultExpr (t:TypeDef) (v:Variant) =
             match t.id with
-            | BondDataType.BT_BOOL ->   let b = v.uint_value <> 0UL       in <@@ b @@> 
-            | BondDataType.BT_DOUBLE -> let f = v.double_value            in <@@ f @@> 
+            | BondDataType.BT_BOOL ->   let b = v.uint_value <> 0UL       in <@@ b @@>
+            | BondDataType.BT_DOUBLE -> let f = v.double_value            in <@@ f @@>
             | BondDataType.BT_FLOAT ->  let f = v.double_value |> float32 in <@@ f @@>
             | BondDataType.BT_INT16 ->  let i = v.int_value |> int16      in <@@ i @@>
             | BondDataType.BT_INT32 ->  let i = v.int_value |> int        in <@@ i @@>
@@ -500,7 +463,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             | BondDataType.BT_STRING -> let s = v.string_value            in <@@ s @@>
             | BondDataType.BT_WSTRING -> let s = v.wstring_value          in <@@ s @@>
             | BondDataType.BT_STRUCT -> <@@ null : obj @@>
-            | BondDataType.BT_LIST -> 
+            | BondDataType.BT_LIST ->
                 let (ty,_) = typeForBondType t
                 Quotations.Expr.NewUnionCase(Reflection.FSharpType.GetUnionCases ty |> Array.find (fun uc -> uc.Name = "Empty"), [])
             | BondDataType.BT_SET ->
@@ -514,13 +477,13 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                 Quotations.Expr.Call(emptyMethod.GetGenericMethodDefinition().MakeGenericMethod(keyTy,elTy), [])
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
-        let rec defaultValue (t:TypeDef) (v:Variant) = 
+        let rec defaultValue (t:TypeDef) (v:Variant) =
             match t.id with
             | BondDataType.BT_BOOL ->   v.uint_value <> 0UL       |> box
-            | BondDataType.BT_DOUBLE -> v.double_value            |> box 
+            | BondDataType.BT_DOUBLE -> v.double_value            |> box
             | BondDataType.BT_FLOAT ->  v.double_value |> float32 |> box
             | BondDataType.BT_INT16 ->  v.int_value |> int16      |> box
             | BondDataType.BT_INT32 ->  v.int_value |> int        |> box
@@ -532,86 +495,83 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
             | BondDataType.BT_UINT8  -> v.uint_value |> byte      |> box
             | BondDataType.BT_STRING -> v.string_value            |> box
             | BondDataType.BT_WSTRING -> v.wstring_value          |> box
-            | BondDataType.BT_STRUCT 
-            | BondDataType.BT_LIST 
-            | BondDataType.BT_SET 
+            | BondDataType.BT_STRUCT
+            | BondDataType.BT_LIST
+            | BondDataType.BT_SET
             | BondDataType.BT_MAP    -> null
             | BondDataType.BT_STOP
             | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE 
+            | BondDataType.BT_UNAVAILABLE
             | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
         /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
-        let fieldsFor i = 
+        let fieldsFor i =
             [for f in schemaContents.structs.[i].fields ->
                 { id = f.id; metadata = f.metadata; defaultExpr = defaultExpr f.``type`` f.metadata.default_value; defaultValue = defaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
             |> List.sortBy (fun fi -> fi.id)
 
         containerTy.AddMembers(
-            schemaContents.structs 
+            schemaContents.structs
             |> Seq.toList
             |> List.mapi (fun i st -> (i,st))
             |> List.filter (fun (_,st) -> st.base_def = null) // we don't currently support inheritance
             |> List.map (fun (i,st) ->
 
-                let reprTy = 
-                    lazy 
+                let reprTy =
+                    lazy
                         fieldsFor i |> List.map (fun fieldInfo -> typeForBondType fieldInfo.fieldType |> fst)
                         |> Array.ofList
                         |> Reflection.FSharpType.MakeTupleType
 
-                let stTy = ProvidedTypeDefinition(st.metadata.name, Some(typeof<obj>))
-                
+                let stTy = ctxt.ProvidedTypeDefinition(st.metadata.name, Some(typeof<obj>))
                 provTys.[uint16 i] <- stTy
                 tupTys.[uint16 i] <- lazy reprTy.Value
 
-                stTy.AddMembersDelayed(fun () -> 
-
-                    let props = 
-                        fieldsFor i |> List.mapi (fun idx fieldInfo -> 
-                            let (_,ty) = typeForBondType fieldInfo.fieldType
-                            ProvidedProperty(fieldInfo.metadata.name, ty, 
-                                GetterCode = fun [this] -> Quotations.Expr.TupleGet(Quotations.Expr.Coerce(this, tupTys.[uint16 i].Value), idx)) :> MemberInfo)
-                                                           
+                stTy.AddMembersDelayed(fun () ->
+                    let props =
+                      fieldsFor i |> List.mapi (fun idx fieldInfo ->
+                          let (_,ty) = typeForBondType fieldInfo.fieldType
+                          ctxt.ProvidedProperty(fieldInfo.metadata.name, ty,
+                                                getterCode = fun [this] -> Quotations.Expr.TupleGet(Quotations.Expr.Coerce(this, tupTys.[uint16 i].Value), idx)) :> MemberInfo)
                     let unitVal = Quotations.Expr.Value(null, typeof<unit>)
 
-                    let rec mkFnTy (dom::tys) = 
-                        let rng = 
+                    let rec mkFnTy (dom::tys) =
+                        let rng =
                             match tys with
                             | [rng] -> rng
                             | l -> mkFnTy l
                         Reflection.FSharpType.MakeFunctionType(dom, rng)
 
-                    let relatedStructs = 
+                    let relatedStructs =
                         structsFrom schemaContents (uint16 i)
                         |> Set.add (uint16 i)
 
-                    let taggedDeserializerVars = 
-                        relatedStructs 
+                    let taggedDeserializerVars =
+                        relatedStructs
                         |> Seq.map (fun i -> i, Quotations.Var(sprintf "tagged_read%i" i, mkFnTy [typeof<ITaggedProtocolReader>; tupTys.[i].Value]))
                         |> dict
 
-                    let untaggedDeserializerVars = 
-                        relatedStructs 
+                    let untaggedDeserializerVars =
+                        relatedStructs
                         |> Seq.map (fun i -> i, Quotations.Var(sprintf "untagged_read%i" i, mkFnTy [typeof<IUntaggedProtocolReader>; tupTys.[i].Value]))
                         |> dict
 
                     let serializerVars =
-                        relatedStructs 
+                        relatedStructs
                         |> Seq.map (fun i -> i, Quotations.Var(sprintf "write%i" i, mkFnTy [typeof<IProtocolWriter>; tupTys.[i].Value; typeof<unit>]))
                         |> dict
 
-                    let allSequential = function 
+                    let allSequential = function
                         | [] -> <@@ () @@>
                         | xs -> List.reduce (fun e1 e2 -> Quotations.Expr.Sequential(e1, <@@ %%e2 : unit @@>)) xs
 
                     let serializers =
-                        [for (KeyValue(idx, serializerVar)) in serializerVars -> 
-                            let writeVarExprs = [for i in relatedStructs -> 
-                                                    i, 
-                                                    fun wrtr e -> 
+                        [for (KeyValue(idx, serializerVar)) in serializerVars ->
+                            let writeVarExprs = [for i in relatedStructs ->
+                                                    i,
+                                                    fun wrtr e ->
                                                         Quotations.Expr.Application(Quotations.Expr.Application(Quotations.Expr.Var serializerVars.[i], wrtr), Quotations.Expr.Coerce(e, tupTys.[i].Value))] |> dict
-//                          let write (ipw : IProtocolWriter) = 
+//                          let write (ipw : IProtocolWriter) =
 //                              ipw.WriteStructBegin(structMeta)
 //
 //                              if tupGet 1 <> def then
@@ -634,29 +594,29 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
 
                             let writer = Quotations.Var("wrtr", typeof<IProtocolWriter>)
                             let value = Quotations.Var("value", tupTys.[idx].Value)
-                            let serializerExpr = 
-                                Quotations.Expr.Lambda(writer, 
-                                    Quotations.Expr.Lambda(value, 
+                            let serializerExpr =
+                                Quotations.Expr.Lambda(writer,
+                                    Quotations.Expr.Lambda(value,
                                         let writer = Quotations.Expr.Cast<IProtocolWriter>(Quotations.Expr.Var writer)
                                         let write = Quotations.Var("write", typeof<IProtocolWriter -> unit>)
                                         Quotations.Expr.Let(
-                                            write, 
+                                            write,
                                             (let ipw = Quotations.Var("ipw", typeof<IProtocolWriter>)
                                              Quotations.Expr.Lambda(ipw,
                                                 let ipw = Quotations.Expr.Cast<IProtocolWriter>(Quotations.Expr.Var ipw)
-                                                
+
                                                 Quotations.Expr.Sequential(
                                                     let writeBegin = <@ (%ipw).WriteStructBegin((%SchemaQuotation.quoteMetadata schemaContents.structs.[int idx].metadata)) @>
                                                     let writeFields =
                                                         fieldsFor (int idx)
-                                                        |> List.mapi (fun idx fieldInfo -> 
+                                                        |> List.mapi (fun idx fieldInfo ->
                                                                         let id = fieldInfo.id
                                                                         let elt = Quotations.Expr.TupleGet(Quotations.Expr.Var value, idx)
                                                                         let cond =  // val <> default  (or val.Count <> 0)
                                                                             if not (bondTyIsContainer fieldInfo.fieldType.id) then
                                                                                 let (Quotations.Patterns.Call(_,neq,[_;_])) = <@ 1 <> 2 @>
                                                                                 Quotations.Expr.Call(neq.GetGenericMethodDefinition().MakeGenericMethod(fieldInfo.defaultExpr.Type), [elt; fieldInfo.defaultExpr])
-                                                                            else 
+                                                                            else
                                                                                 // not {List,Set,Map}.isEmpty
                                                                                 let (Quotations.Patterns.Call(None,m,[_])) =
                                                                                     match fieldInfo.fieldType.id with
@@ -664,9 +624,9 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                                                                     | BondDataType.BT_SET -> <@ Set.isEmpty Set.empty @>
                                                                                     | BondDataType.BT_MAP -> <@ Map.isEmpty Map.empty @>
                                                                                 <@@ not (%%Quotations.Expr.Call(m.GetGenericMethodDefinition().MakeGenericMethod(elt.Type.GetGenericArguments()), [elt])) @@>
-                                                                                            
+
                                                                         let bondTy = fieldInfo.fieldType.id
-                                                                        let writeField = 
+                                                                        let writeField =
                                                                             <@ (%ipw).WriteFieldBegin(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata)
                                                                                (%%writerForBondType fieldInfo.fieldType ipw elt writeVarExprs)
                                                                                (%ipw).WriteFieldEnd() @>
@@ -679,7 +639,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                                                                     %writeField
                                                                                 else
                                                                                     (%ipw).WriteFieldOmitted(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata) @>)
-                                                    writeBegin :: writeFields |> List.reduce (fun q1 q2 -> <@ %q1; %q2 @>), 
+                                                    writeBegin :: writeFields |> List.reduce (fun q1 q2 -> <@ %q1; %q2 @>),
                                                     <@ (%ipw).WriteStructEnd() @>))),
 
                                             let write = Quotations.Expr.Cast<IProtocolWriter->unit>(Quotations.Expr.Var write)
@@ -687,16 +647,16 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                             serializerVar, serializerExpr]
 
                     let NewTuple_ (expr : Quotations.Expr list) =
-                        // BUGBUG: Quotations.Expr.NewTuple does not create a Tuple when called with one argument, this appear to be F# compiler bug 
-                        let tupTy = [| for e in expr -> e.Type |] 
-                                    |> Reflection.FSharpType.MakeTupleType 
+                        // BUGBUG: Quotations.Expr.NewTuple does not create a Tuple when called with one argument, this appear to be F# compiler bug
+                        let tupTy = [| for e in expr -> e.Type |]
+                                    |> Reflection.FSharpType.MakeTupleType
                         if expr.Length > 1 then
                             Quotations.Expr.NewTuple(expr)
                         else
                             Quotations.Expr.NewObject(tupTy.GetConstructors().[0], expr)
 
-                    let structFieldVarsAndVals idx = 
-                        fieldsFor (int idx) 
+                    let structFieldVarsAndVals idx =
+                        fieldsFor (int idx)
                         |> List.map (fun fieldInfo ->
                             let e = fieldInfo.defaultExpr
                             let refTy = typedefof<_ ref>.MakeGenericType(e.Type)
@@ -706,13 +666,13 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                         |> List.toArray
 
                     // inline fieldswitch instead of having it be a function
-                    let simplify e = 
+                    let simplify e =
                         let rec simplify = function
                         | Quotations.Patterns.Application(Quotations.Patterns.Lambda(v,e), Quotations.Patterns.Var v') ->
                             true, e.Substitute(fun v'' -> if v'' = v then Some(Quotations.Expr.Var v') else None) |> simplify |> snd
                         | Quotations.Patterns.Application(f,b) as e ->
                             let sf, ef = simplify f
-                            let sb, eb = simplify b 
+                            let sb, eb = simplify b
                             if sf || sb then true, Quotations.Expr.Application(ef, eb) |> simplify |> snd
                             else false, e
                         | Quotations.ExprShape.ShapeLambda(v,b) as e ->
@@ -724,12 +684,12 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                             else false, e
                         | Quotations.ExprShape.ShapeVar _ as e -> false, e
                         simplify e |> snd
-                    
+
                     let taggedDeserializers =
                         [for (KeyValue(idx, deserializerVar)) in taggedDeserializerVars ->
-                            let makeVarExprs = [for i in relatedStructs -> 
-                                                    i, 
-                                                    fun rdr -> 
+                            let makeVarExprs = [for i in relatedStructs ->
+                                                    i,
+                                                    fun rdr ->
                                                         Quotations.Expr.Application(Quotations.Expr.Var taggedDeserializerVars.[i], rdr)] |> dict
 
 //                          rdr.ReadStructBegin()
@@ -747,15 +707,15 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
 //                          loop()
 
 
-// TODO: need to handle required fields: 
+// TODO: need to handle required fields:
 //          add throwing "else" blocks to "if not ..."
 //          add bitarray writing within loop and checking after
 
                             let reader = Quotations.Var("rdr", typeof<ITaggedProtocolReader>)
 
                             let fieldVarsAndVals = structFieldVarsAndVals idx
-                            
-                            let expr = 
+
+                            let expr =
                                 let reader = Quotations.Expr.Cast<ITaggedProtocolReader>(Quotations.Expr.Var reader)
 
                                 let readFieldFns =
@@ -763,7 +723,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
                                         let read = taggedReader fieldInfo.fieldType reader makeVarExprs
-                                        fn, Quotations.Expr.Lambda(Quotations.Var("_", typeof<unit>), 
+                                        fn, Quotations.Expr.Lambda(Quotations.Var("_", typeof<unit>),
                                                 let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
                                                 Quotations.Expr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [Quotations.Expr.Var var; read])))
@@ -772,9 +732,9 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                 let fieldSwitch =
                                     let tyVar = Quotations.Var("ty", typeof<BondDataType>)
                                     let idVar = Quotations.Var("id", typeof<uint16>)
-                                    Quotations.Expr.Lambda(tyVar, 
-                                        Quotations.Expr.Lambda(idVar, 
-                                            let fn = 
+                                    Quotations.Expr.Lambda(tyVar,
+                                        Quotations.Expr.Lambda(idVar,
+                                            let fn =
                                                 fieldsFor (int idx)
                                                 |> List.mapi (fun fldIdx fieldInfo ->
                                                     fun ty id' next ->
@@ -783,8 +743,8 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                                         Quotations.Expr.IfThenElse(<@ %id' = id @>, <@ (%%Quotations.Expr.Var (fst readFieldFns.[fldIdx])) () : unit @>, next))
                                                 |> List.fold (fun e f ty id -> f ty id (e ty id)) (fun ty _ -> <@@ (%reader).Skip(%ty) @@>)
                                             fn (tyVar |> Quotations.Expr.Var |> Quotations.Expr.Cast) (idVar |> Quotations.Expr.Var |> Quotations.Expr.Cast)))
-                                
-                                let body = 
+
+                                let body =
                                     <@@ (%reader).ReadStructBegin()
                                         let rec loop() =
                                             let ty,id = RuntimeHelpers.ReadFieldBegin %reader
@@ -799,8 +759,8 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                 |> Array.fold (fun b (v,e) -> Quotations.Expr.Let(v,e,b)) body
                                 |> simplify
 
-                            let deserializerExpr = 
-                                Quotations.Expr.Lambda(reader, 
+                            let deserializerExpr =
+                                Quotations.Expr.Lambda(reader,
                                     fieldVarsAndVals
                                     |> Array.fold (fun e (var,def,_) -> Quotations.Expr.Let(var, def, e)) (Quotations.Expr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
 
@@ -809,16 +769,16 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
 
                     let untaggedDeserializers =
                         [for (KeyValue(idx,deserializerVar)) in untaggedDeserializerVars ->
-                            let makeVarExprs = [for i in relatedStructs -> 
-                                                    i, 
-                                                    fun rdr -> 
+                            let makeVarExprs = [for i in relatedStructs ->
+                                                    i,
+                                                    fun rdr ->
                                                         Quotations.Expr.Application(Quotations.Expr.Var untaggedDeserializerVars.[i], rdr)] |> dict
 
                             let reader = Quotations.Var("rdr", typeof<IUntaggedProtocolReader>)
 
                             let fieldVarsAndVals = structFieldVarsAndVals idx
-                            
-                            let expr = 
+
+                            let expr =
                                 let reader = Quotations.Expr.Cast<IUntaggedProtocolReader>(Quotations.Expr.Var reader)
 
                                 let readFieldFns =
@@ -826,7 +786,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
                                         let read = untaggedReader fieldInfo.fieldType reader makeVarExprs
-                                        fn, Quotations.Expr.Lambda(Quotations.Var("_", typeof<unit>), 
+                                        fn, Quotations.Expr.Lambda(Quotations.Var("_", typeof<unit>),
                                                 let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
                                                 Quotations.Expr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [Quotations.Expr.Var var; read])))
@@ -837,11 +797,11 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                                         <@@ if not ((%reader).ReadFieldOmitted()) then
                                                 (%%Quotations.Expr.Var v) ()  @@>]
                                     |> allSequential
-                                    
+
                                 readFieldFns
                                 |> Array.fold (fun b (v,e) -> Quotations.Expr.Let(v,e,b)) body
 
-                            let deserializerExpr = 
+                            let deserializerExpr =
                                 Quotations.Expr.Lambda(reader,
                                     fieldVarsAndVals
                                     |> Array.fold (fun e (var,def,_) -> Quotations.Expr.Let(var, def, e)) (Quotations.Expr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
@@ -850,7 +810,7 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
 
                     let createInstance args =
                         List.zip args (fieldsFor i)
-                        |> List.map (fun (arg:Quotations.Expr, f) -> 
+                        |> List.map (fun (arg:Quotations.Expr, f) ->
                             if f.defaultValue = null then
                                 // <@ if (arg :> obj) = null then defaultExpr else arg @>
                                 // Note that we can't use the generic equality test at the actual arg type or it will throw a null reference exception, thanks to F#'s non-nullable type checking
@@ -858,39 +818,24 @@ type public BondTypeProvider(cfg:TypeProviderConfig) =
                             else
                                 arg)
                         |> NewTuple_
-                    
-                    props @ [ProvidedConstructor(
-                                [for (:? PropertyInfo as pi), fi in Seq.zip props (fieldsFor i) -> ProvidedParameter(pi.Name, pi.PropertyType, optionalValue = fi.defaultValue)], 
-                                InvokeCode = createInstance)
-                             ProvidedMethod(
-                                "DeserializeFrom",
-                                [ProvidedParameter("reader", typeof<ITaggedProtocolReader>)], 
-                                stTy, 
-                                IsStaticMethod = true, 
-                                InvokeCode = fun [rdr] -> 
-                                    Quotations.Expr.LetRecursive(
-                                        taggedDeserializers, 
-                                        Quotations.Expr.Application(Quotations.Expr.Var taggedDeserializerVars.[uint16 i], rdr)))
-                             ProvidedMethod(
-                                "DeserializeFrom",
-                                [ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)], 
-                                stTy, 
-                                IsStaticMethod = true, 
-                                InvokeCode = fun [rdr] -> 
-                                    Quotations.Expr.LetRecursive(
-                                        untaggedDeserializers, 
-                                        Quotations.Expr.Application(Quotations.Expr.Var untaggedDeserializerVars.[uint16 i], rdr)))
-                             ProvidedMethod(
-                                "SerializeTo",
-                                [ProvidedParameter("writer", typeof<IProtocolWriter>)], 
-                                typeof<unit>, 
-                                InvokeCode = fun [this;wrtr] -> 
-                                    Quotations.Expr.LetRecursive(
-                                        serializers, 
-                                        Quotations.Expr.Application(
-                                            Quotations.Expr.Application(Quotations.Expr.Var serializerVars.[uint16 i], wrtr), 
-                                            Quotations.Expr.Coerce(this, tupTys.[uint16 i].Value))))])
+
+                    props @ [ctxt.ProvidedConstructor(
+                                [for (:? PropertyInfo as pi), fi in Seq.zip props (fieldsFor i) -> ProvidedParameter(pi.Name, pi.PropertyType, optionalValue = fi.defaultValue)],
+                                invokeCode = createInstance)
+                             ctxt.ProvidedMethod("DeserializeFrom",
+                                                 [ctxt.ProvidedParameter("reader", typeof<ITaggedProtocolReader>)],
+                                                 stTy, // isStaticMethod = true,
+                                                 invokeCode = fun [rdr] -> Quotations.Expr.LetRecursive(taggedDeserializers, Quotations.Expr.Application(Quotations.Expr.Var taggedDeserializerVars.[uint16 i], rdr)))
+                             ctxt.ProvidedMethod("DeserializeFrom",
+                                                 [ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)],
+                                                 stTy, // IsStaticMethod = true,
+                                                 invokeCode = fun [rdr] -> Quotations.Expr.LetRecursive(untaggedDeserializers, Quotations.Expr.Application(Quotations.Expr.Var untaggedDeserializerVars.[uint16 i], rdr)))
+                             ctxt.ProvidedMethod("SerializeTo",
+                                                 [ProvidedParameter("writer", typeof<IProtocolWriter>)],
+                                                 typeof<unit>,
+                                                 invokeCode = fun [this;wrtr] -> Quotations.Expr.LetRecursive(serializers, Quotations.Expr.Application(
+                                                                                                                              Quotations.Expr.Application(Quotations.Expr.Var serializerVars.[uint16 i], wrtr),
+                                                                                                                              Quotations.Expr.Coerce(this, tupTys.[uint16 i].Value))))])
                 stTy))
-        
         containerTy))
     do base.AddNamespace(ns, [schemaTy])

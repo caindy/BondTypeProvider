@@ -97,7 +97,7 @@ struct Tests
 
 struct All
 {
-    0: Tests        t1
+    0: Tests        t1;
     1: NoFields     t2;
 };
 
