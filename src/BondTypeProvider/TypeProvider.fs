@@ -20,85 +20,84 @@ module RuntimeHelpers =
   let ReadKeyValueContainerBegin(reader : ITaggedProtocolReader) : _*_*_ =
       reader.ReadContainerBegin()
 
-[<RequireQualifiedAccess>]
-module internal TP =
-  open FSharp.Quotations
-  open Patterns
-  type internal Helper =
-    /// <summary>Makes a quotation of the form
-    /// <code>
-    ///   for v in s do
-    ///     body
-    /// </code>
-    /// </summary>
-    static member MakeFor<'a,'b when 'a :> seq<'b>>(v, s, body) =
-        let q = <@@ for el in (%%s : 'a) do
-                        %%body @@>
-        // replace 'el' variable with v, leaving everything else the same
-        // we know that q is of the form 
-        //     let inputSequence = s
-        //     let enumerator = inputSequence.GetEnumerator()
-        //     try
-        //         while enumerator.MoveNext() do
-        //             let el = enumerator.Current
-        //             ...
-        //     finally
-        //         ...
-        let (Let(v0, e0, Let(v1, e1, TryFinally(WhileLoop(e2, Let(v3, e3, b3)), e4)))) = q
-        Expr.Let(v0,e0,Expr.Let(v1,e1,Expr.TryFinally(Expr.WhileLoop(e2, Expr.Let(v,e3,b3)), e4)))
+open FSharp.Quotations
+open Patterns
+type internal Helper =
+  /// <summary>Makes a quotation of the form
+  /// <code>
+  ///   for v in s do
+  ///     body
+  /// </code>
+  /// </summary>
+  static member MakeFor<'a,'b when 'a :> seq<'b>>(v, s, body) =
+      let q = <@@ for el in (%%s : 'a) do
+                      %%body @@>
+      // replace 'el' variable with v, leaving everything else the same
+      // we know that q is of the form 
+      //     let inputSequence = s
+      //     let enumerator = inputSequence.GetEnumerator()
+      //     try
+      //         while enumerator.MoveNext() do
+      //             let el = enumerator.Current
+      //             ...
+      //     finally
+      //         ...
+      let (Let(v0, e0, Let(v1, e1, TryFinally(WhileLoop(e2, Let(v3, e3, b3)), e4)))) = q
+      Expr.Let(v0,e0,Expr.Let(v1,e1,Expr.TryFinally(Expr.WhileLoop(e2, Expr.Let(v,e3,b3)), e4)))
 
-  module Expr =
-    /// <summary>Makes a quotation of the form
-    /// <code>
-    ///   for v in s do
-    ///     body</code></summary>
-    let internal For(v:Quotations.Var, s:Quotations.Expr, b:Quotations.Expr) =
-        let seqTy = s.Type
-        let eltTy = seqTy.GetInterface("System.Collections.Generic.IEnumerable`1").GetGenericArguments().[0]
-        typeof<Helper>.GetMethod("MakeFor", enum 0xffffffff).MakeGenericMethod(seqTy, eltTy).Invoke(null, [|v;s;b|]) :?> Expr
+module internal Expr =
+  /// <summary>Makes a quotation of the form
+  /// <code>
+  ///   for v in s do
+  ///     body</code></summary>
+  let internal For(v:Quotations.Var, s:Quotations.Expr, b:Quotations.Expr) =
+      let seqTy = s.Type
+      let eltTy = seqTy.GetInterface("System.Collections.Generic.IEnumerable`1").GetGenericArguments().[0]
+      typeof<Helper>.GetMethod("MakeFor", enum 0xffffffff).MakeGenericMethod(seqTy, eltTy).Invoke(null, [|v;s;b|]) :?> Expr
 
+type internal TP (provTys : IDictionary<uint16, ProvidedTypeDefinition>) =
   /// gets the representation type and full (unerased) type corresponding to the given TypeDef
-  let typeForBondType (provTys : IDictionary<uint16, ProvidedTypeDefinition>) (t' : TypeDef) =
-    let rec typeForBondType' (t : TypeDef) =
-      match t.id with
-      | BondDataType.BT_BOOL ->    typeof<bool>   , typeof<bool>
-      | BondDataType.BT_DOUBLE ->  typeof<float>  , typeof<float>
-      | BondDataType.BT_FLOAT ->   typeof<float32>, typeof<float32>
-      | BondDataType.BT_INT16 ->   typeof<int16>  , typeof<int16>
-      | BondDataType.BT_INT32 ->   typeof<int>    , typeof<int>
-      | BondDataType.BT_INT64 ->   typeof<int64>  , typeof<int64>
-      | BondDataType.BT_INT8  ->   typeof<sbyte>  , typeof<sbyte>
-      | BondDataType.BT_UINT16 ->  typeof<uint16> , typeof<uint16>
-      | BondDataType.BT_UINT32 ->  typeof<uint32> , typeof<uint32>
-      | BondDataType.BT_UINT64 ->  typeof<uint64> , typeof<uint64>
-      | BondDataType.BT_UINT8  ->  typeof<byte>   , typeof<byte>
-      | BondDataType.BT_STRING ->  typeof<string> , typeof<string>
-      | BondDataType.BT_WSTRING -> typeof<string> , typeof<string>
-      | BondDataType.BT_STRUCT -> typeof<obj>, upcast provTys.[t.struct_def]
-      | BondDataType.BT_LIST ->
-          let mkTy t =
-              let tyDef = typedefof<_ list>
-              tyDef.MakeGenericType([|t|])
-          let repr, full = typeForBondType' t.element
-          mkTy repr, mkTy full
-      | BondDataType.BT_MAP ->
-          let mkTy k v =
-              let tyDef = typedefof<Map<_,_>>
-              tyDef.MakeGenericType([|k;v|])
-          let krepr, kfull = typeForBondType' t.key
-          let vrepr, vfull = typeForBondType' t.element
-          mkTy krepr vrepr, mkTy kfull vfull
-      | BondDataType.BT_SET ->
-          let mkTy t =
-              let tyDef = typedefof<Set<_>>
-              tyDef.MakeGenericType([|t|])
-          let repr, full = typeForBondType' t.element
-          mkTy repr, mkTy full
-      | BondDataType.BT_STOP
-      | BondDataType.BT_STOP_BASE
-      | BondDataType.BT_UNAVAILABLE
-      | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-    typeForBondType' t'
+  let rec typeForBondType (t : TypeDef) =
+    match t.id with
+    | BondDataType.BT_BOOL ->    typeof<bool>   , typeof<bool>
+    | BondDataType.BT_DOUBLE ->  typeof<float>  , typeof<float>
+    | BondDataType.BT_FLOAT ->   typeof<float32>, typeof<float32>
+    | BondDataType.BT_INT16 ->   typeof<int16>  , typeof<int16>
+    | BondDataType.BT_INT32 ->   typeof<int>    , typeof<int>
+    | BondDataType.BT_INT64 ->   typeof<int64>  , typeof<int64>
+    | BondDataType.BT_INT8  ->   typeof<sbyte>  , typeof<sbyte>
+    | BondDataType.BT_UINT16 ->  typeof<uint16> , typeof<uint16>
+    | BondDataType.BT_UINT32 ->  typeof<uint32> , typeof<uint32>
+    | BondDataType.BT_UINT64 ->  typeof<uint64> , typeof<uint64>
+    | BondDataType.BT_UINT8  ->  typeof<byte>   , typeof<byte>
+    | BondDataType.BT_STRING ->  typeof<string> , typeof<string>
+    | BondDataType.BT_WSTRING -> typeof<string> , typeof<string>
+    | BondDataType.BT_STRUCT -> typeof<obj>, upcast provTys.[t.struct_def]
+    | BondDataType.BT_LIST ->
+        let mkTy t =
+            let tyDef = typedefof<_ list>
+            tyDef.MakeGenericType([|t|])
+        let repr, full = typeForBondType t.element
+        mkTy repr, mkTy full
+    | BondDataType.BT_MAP ->
+        let mkTy k v =
+            let tyDef = typedefof<Map<_,_>>
+            tyDef.MakeGenericType([|k;v|])
+        let krepr, kfull = typeForBondType t.key
+        let vrepr, vfull = typeForBondType t.element
+        mkTy krepr vrepr, mkTy kfull vfull
+    | BondDataType.BT_SET ->
+        let mkTy t =
+            let tyDef = typedefof<Set<_>>
+            tyDef.MakeGenericType([|t|])
+        let repr, full = typeForBondType t.element
+        mkTy repr, mkTy full
+    | BondDataType.BT_STOP
+    | BondDataType.BT_STOP_BASE
+    | BondDataType.BT_UNAVAILABLE
+    | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
+
+
   let rec defaultValue (t:TypeDef) (v:Variant) =
       match t.id with
       | BondDataType.BT_BOOL ->   v.uint_value <> 0UL       |> box
@@ -123,7 +122,7 @@ module internal TP =
       | BondDataType.BT_UNAVAILABLE
       | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
-  let rec defaultExpr (provTys : IDictionary<uint16, ProvidedTypeDefinition>) (t:TypeDef) (v:Variant) =
+  let rec defaultExpr (t:TypeDef) (v:Variant) =
       match t.id with
       | BondDataType.BT_BOOL ->   let b = v.uint_value <> 0UL       in <@@ b @@>
       | BondDataType.BT_DOUBLE -> let f = v.double_value            in <@@ f @@>
@@ -140,15 +139,15 @@ module internal TP =
       | BondDataType.BT_WSTRING -> let s = v.wstring_value          in <@@ s @@>
       | BondDataType.BT_STRUCT -> <@@ null : obj @@>
       | BondDataType.BT_LIST ->
-          let (ty,_) = typeForBondType provTys t
+          let (ty,_) = typeForBondType t
           QExpr.NewUnionCase(Reflection.FSharpType.GetUnionCases ty |> Array.find (fun uc -> uc.Name = "Empty"), [])
       | BondDataType.BT_SET ->
-          let (elTy,_) = typeForBondType provTys t.element
+          let (elTy,_) = typeForBondType t.element
           let (Quotations.Patterns.Call(None,emptyMethod,[])) = <@ Set.empty @>
           QExpr.Call(emptyMethod.GetGenericMethodDefinition().MakeGenericMethod(elTy), [])
       | BondDataType.BT_MAP ->
-          let (keyTy,_) = typeForBondType provTys t.key
-          let (elTy,_) = typeForBondType provTys t.element
+          let (keyTy,_) = typeForBondType t.key
+          let (elTy,_) = typeForBondType t.element
           let (Quotations.Patterns.Call(None,emptyMethod,[])) = <@ Map.empty @>
           QExpr.Call(emptyMethod.GetGenericMethodDefinition().MakeGenericMethod(keyTy,elTy), [])
       | BondDataType.BT_STOP
@@ -202,7 +201,7 @@ module internal TP =
   /// Given a TypeDef, an expression for an IUntaggedProtocolReader and a dictionary mapping struct IDs to readers,
   /// produces an expression that reads the corresponding type of value from a reader
   // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-  let rec untaggedReader (provTys : IDictionary<uint16, ProvidedTypeDefinition>) (t:TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
+  let rec untaggedReader (t:TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
       match t.id with
       | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
       | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
@@ -227,10 +226,10 @@ module internal TP =
               //           arr.[i] <- read rdr
               //       rdr.ReadContainerEnd()
               //       Array.toList/Set.ofArray arr @>
-              let elRep, _ = typeForBondType provTys t.element
+              let elRep, _ = typeForBondType  t.element
               let convertArray = if t.id = BondDataType.BT_LIST then toList elRep else setOfArray elRep
               fun rdr provFns ->
-                  let read = untaggedReader provTys t.element rdr provFns
+                  let read = untaggedReader  t.element rdr provFns
                   let ct = Quotations.Var("ct", typeof<int>)
                   QExpr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
                       QExpr.Call(convertArray,
@@ -244,11 +243,11 @@ module internal TP =
               //           arr.[i] <- readKey rdr, readVal rdr
               //       rdr.ReadContainerEnd()
               //       Map.ofArray arr @>
-              let elRep, _ = typeForBondType provTys t.element
-              let keyRep, _ = typeForBondType provTys t.key
+              let elRep, _ = typeForBondType  t.element
+              let keyRep, _ = typeForBondType  t.key
               fun rdr provFns ->
-                  let readKey = untaggedReader provTys t.key rdr provFns
-                  let readEl = untaggedReader provTys t.element rdr provFns
+                  let readKey = untaggedReader  t.key rdr provFns
+                  let readEl = untaggedReader  t.element rdr provFns
                   let ct = Quotations.Var("ct", typeof<int>)
                   QExpr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
                       QExpr.Call(mapOfArray keyRep elRep,
@@ -259,10 +258,11 @@ module internal TP =
       | BondDataType.BT_UNAVAILABLE
       | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
+
   /// Given a TypeDef, an expression for an ITaggedProtocolReader and a dictionary mapping struct IDs to readers,
   /// produces an expression that reads the corresponding type of value from a reader
   // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-  let rec taggedReader (provTys : IDictionary<uint16, ProvidedTypeDefinition>) (t:TypeDef) : Quotations.Expr<ITaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
+  let rec taggedReader (t:TypeDef) : Quotations.Expr<ITaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
       match t.id with
       | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
       | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
@@ -287,10 +287,10 @@ module internal TP =
               //           arr.[i] <- read rdr
               //       rdr.ReadContainerEnd()
               //       Array.toList/Set.ofArray arr @>
-              let elRep, _ = typeForBondType provTys t.element 
+              let elRep, _ = typeForBondType  t.element 
               let convertArray = if t.id = BondDataType.BT_LIST then toList elRep else setOfArray elRep
               fun rdr provFns ->
-                  let read = taggedReader provTys t.element rdr provFns
+                  let read = taggedReader t.element rdr provFns
                   let ct = Quotations.Var("ct", typeof<int>)
                   QExpr.Let(ct, QExpr.TupleGet(<@@ RuntimeHelpers.ReadContainerBegin %rdr @@>, 0),
                       QExpr.Call(convertArray,
@@ -304,11 +304,11 @@ module internal TP =
               //           arr.[i] <- readKey rdr, readVal rdr
               //       rdr.ReadContainerEnd()
               //       Map.ofArray arr @>
-              let elRep, _ = typeForBondType provTys t.element
-              let keyRep, _ = typeForBondType provTys t.key
+              let elRep, _ = typeForBondType t.element
+              let keyRep, _ = typeForBondType t.key
               fun rdr provFns ->
-                  let readKey = taggedReader provTys t.key rdr provFns
-                  let readEl = taggedReader provTys t.element rdr provFns
+                  let readKey = taggedReader t.key rdr provFns
+                  let readEl = taggedReader t.element rdr provFns
                   let ct = Quotations.Var("ct", typeof<int>)
                   QExpr.Let(ct, QExpr.TupleGet(<@@ RuntimeHelpers.ReadKeyValueContainerBegin %rdr @@>, 0),
                       QExpr.Call(mapOfArray keyRep elRep,
@@ -320,7 +320,7 @@ module internal TP =
       | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
   /// Given a TypeDef, an expression representing an IProtocolWriter, and an expression representing the value to write, produces an expression for writing the value
-  let rec writerForBondType (provTys : IDictionary<uint16, ProvidedTypeDefinition>) (t:TypeDef) : Quotations.Expr<IProtocolWriter> -> _ -> IDictionary<uint16,_> -> _ =
+  let rec writerForBondType (t:TypeDef) : Quotations.Expr<IProtocolWriter> -> _ -> IDictionary<uint16,_> -> _ =
       match t.id with
       | BondDataType.BT_BOOL ->    fun wrtr e _ -> <@@ (%wrtr).WriteBool(%%e) @@>
       | BondDataType.BT_DOUBLE ->  fun wrtr e _ -> <@@ (%wrtr).WriteDouble(%%e) @@>
@@ -342,9 +342,9 @@ module internal TP =
           //       for e in l do
           //           write wrtr e
           //       wrtr.WriteContainerEnd() @>
-          let lstRep, _ = typeForBondType provTys t
-          let elRep, _ = typeForBondType provTys t.element
-          let wrtrGen = writerForBondType provTys t.element
+          let lstRep, _ = typeForBondType t
+          let elRep, _ = typeForBondType t.element
+          let wrtrGen = writerForBondType t.element
           let lenProp = lstRep.GetProperty("Length")
           fun wrtr lstExpr d ->
               let write e = wrtrGen wrtr e d
@@ -361,9 +361,9 @@ module internal TP =
           //       for e in s do
           //           write wrtr e
           //       wrtr.WriteContainerEnd() @>
-          let setRep, _ = typeForBondType provTys t
-          let elRep, _ = typeForBondType provTys t.element
-          let wrtrGen = writerForBondType provTys t.element
+          let setRep, _ = typeForBondType t
+          let elRep, _ = typeForBondType t.element
+          let wrtrGen = writerForBondType t.element
           let lenProp = setRep.GetProperty("Count")
           fun wrtr setExpr d ->
               let write e = wrtrGen wrtr e d
@@ -381,11 +381,11 @@ module internal TP =
           //       for e in s do
           //           write wrtr e
           //       wrtr.WriteContainerEnd() @>
-          let dictRep, _ = typeForBondType provTys t
-          let elRep, _ = typeForBondType provTys t.element
-          let keyRep, _ = typeForBondType provTys t.key
-          let elWrtrGen = writerForBondType provTys t.element
-          let keyWrtrGen = writerForBondType provTys t.key
+          let dictRep, _ = typeForBondType t
+          let elRep, _ = typeForBondType t.element
+          let keyRep, _ = typeForBondType t.key
+          let elWrtrGen = writerForBondType t.element
+          let keyWrtrGen = writerForBondType t.key
           let lenProp = dictRep.GetProperty("Count")
           fun wrtr dictExpr d ->
               let writeKey e = keyWrtrGen wrtr e d
@@ -405,3 +405,9 @@ module internal TP =
       | BondDataType.BT_UNAVAILABLE
       | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
+  member __.TypeForBondType   (t : TypeDef) = typeForBondType t
+  member __.DefaultExpr       (t : TypeDef) (v : Variant) = defaultExpr t v
+  member __.DefaultValue      (t : TypeDef) ( v: Variant) = defaultValue t v
+  member __.UntaggedReader    (t : TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ = untaggedReader t
+  member __.TaggedReader      (t : TypeDef) : Quotations.Expr<ITaggedProtocolReader>   -> IDictionary<uint16,_> -> _ = taggedReader t 
+  member __.WriterForBondType (t : TypeDef) : Quotations.Expr<IProtocolWriter> -> _    -> IDictionary<uint16,_> -> _ = writerForBondType t

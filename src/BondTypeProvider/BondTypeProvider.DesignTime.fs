@@ -49,7 +49,6 @@ module private SchemaQuotation =
       let md = m.modifier
       <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
 
-
 [<TypeProvider>]
 type public BondTypeProvider(cfg : TypeProviderConfig) =
     inherit TypeProviderForNamespaces()
@@ -78,6 +77,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                       <param name='Protocol'>Schema serialization protocol (marshalled by default)</param>"""
 
     do schemaTy.AddXmlDoc helpText
+
     do schemaTy.DefineStaticParameters([filename; protTy;], memo (fun tyName [| :? string as filename; :? int as prot; |] ->
         let uri =
             if Uri.IsWellFormedUriString(filename, UriKind.Relative) then
@@ -109,7 +109,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
 
         /// maps struct IDs to provided type
         let provTys = Dictionary()
-        let typeForBondType = TP.typeForBondType provTys
+        let tp = TP(provTys)
 
         /// maps struct i => Tuple<...>
         let tupTys = Dictionary()
@@ -145,7 +145,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
         /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
         let fieldsFor i =
             [for f in schemaContents.structs.[i].fields ->
-                { id = f.id; metadata = f.metadata; defaultExpr = TP.defaultExpr provTys f.``type`` f.metadata.default_value; defaultValue = TP.defaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
+                { id = f.id; metadata = f.metadata; defaultExpr = tp.DefaultExpr f.``type`` f.metadata.default_value; defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
             |> List.sortBy (fun fi -> fi.id)
 
         containerTy.AddMembers(
@@ -157,7 +157,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
 
                 let reprTy =
                     lazy
-                        fieldsFor i |> List.map (fun fieldInfo -> typeForBondType fieldInfo.fieldType |> fst)
+                        fieldsFor i |> List.map (fun fieldInfo -> tp.TypeForBondType fieldInfo.fieldType |> fst)
                         |> Array.ofList
                         |> Reflection.FSharpType.MakeTupleType
 
@@ -168,7 +168,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                 stTy.AddMembersDelayed(fun () ->
                     let props =
                       fieldsFor i |> List.mapi (fun idx fieldInfo ->
-                          let (_,ty) = typeForBondType fieldInfo.fieldType
+                          let (_,ty) = tp.TypeForBondType fieldInfo.fieldType
                           ctxt.ProvidedProperty(fieldInfo.metadata.name, ty,
                                                 getterCode = fun [this] -> QExpr.TupleGet(QExpr.Coerce(this, tupTys.[uint16 i].Value), idx)) :> MemberInfo)
                     let unitVal = QExpr.Value(null, typeof<unit>)
@@ -271,7 +271,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                                                         let bondTy = fieldInfo.fieldType.id
                                                                         let writeField =
                                                                             <@ (%ipw).WriteFieldBegin(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata)
-                                                                               (%%TP.writerForBondType provTys fieldInfo.fieldType ipw elt writeVarExprs)
+                                                                               (%%tp.WriterForBondType fieldInfo.fieldType ipw elt writeVarExprs)
                                                                                (%ipw).WriteFieldEnd() @>
                                                                         if fieldInfo.metadata.modifier <> Modifier.Optional then
                                                                             // if the field is required, always write it
@@ -365,11 +365,11 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                     fieldsFor (int idx)
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
-                                        let read = TP.taggedReader provTys fieldInfo.fieldType reader makeVarExprs
+                                        let read = tp.TaggedReader fieldInfo.fieldType reader makeVarExprs
                                         fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
                                                 let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
-                                                QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
+                                                QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (tp.TypeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
                                     |> List.toArray
 
                                 let fieldSwitch =
@@ -428,11 +428,11 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                     fieldsFor (int idx)
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
-                                        let read = TP.untaggedReader provTys fieldInfo.fieldType reader makeVarExprs
+                                        let read = tp.UntaggedReader fieldInfo.fieldType reader makeVarExprs
                                         fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
                                                 let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
-                                                QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
+                                                QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (tp.TypeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
                                     |> List.toArray
 
                                 let body =
@@ -481,4 +481,5 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                                                                                                               QExpr.Coerce(this, tupTys.[uint16 i].Value))))])
                 stTy))
         containerTy))
+
     do base.AddNamespace(ns, [schemaTy])
