@@ -12,9 +12,6 @@ open Bond
 open Bond.Protocols
 open Bond.IO.Unsafe
 
-
-/// Convert SchemaDefs (and their components) to equivalent quotation literals
-
 [<TypeProvider>]
 type public BondTypeProvider(cfg : TypeProviderConfig) =
   inherit TypeProviderForNamespaces()

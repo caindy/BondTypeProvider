@@ -5,80 +5,93 @@ open System.Collections.Generic
 open Bond
 open Bond.Protocols
 
-type internal fieldInfo = { id : uint16; metadata : Metadata; defaultExpr : Quotations.Expr; defaultValue : obj; fieldType : TypeDef }
+type internal fieldInfo = {
+  id : uint16; metadata : Metadata;
+  defaultExpr : Quotations.Expr; defaultValue : obj; fieldType : TypeDef }
 
+/// Convert SchemaDefs (and their components) to equivalent quotation literals
 module private SchemaQuotation =
-  /// Given a function for converting list elements to quotations and a list of values, generate a quoted list
+  /// Given a function for converting list elements to quotations and a list of values,
+  /// generate a quoted list
   let rec private qList f = function
   | [] -> <@ [] @>
   | x::xs -> <@ %(f x) :: %(qList f xs) @>
 
   /// Given a dictionary, generate a quotation building an equivalent dictionary
   let private quoteDict d =
-      <@ Dictionary(dict %(d |> List.ofSeq |> qList (fun (KeyValue(k,v)) -> <@ k, v @>))) @>
+    <@ Dictionary(dict %(d |> List.ofSeq |> qList (fun (KeyValue(k,v)) -> <@ k, v @>))) @>
 
   /// Given a Variant, produce an equivalent quotation
   let quoteVariant (v:Variant) =
-      if v.nothing then
-          <@ Variant(nothing = true) @>
-      elif v.int_value <> 0L then
-          let v = v.int_value in <@ Variant(int_value = v) @>
-      elif v.uint_value <> 0uL then
-          let v = v.uint_value in <@ Variant(uint_value = v) @>
-      elif v.double_value <> 0.0 then
-          let v = v.double_value in <@ Variant(double_value = v) @>
-      elif v.string_value <> "" then
-          let v = v.string_value in <@ Variant(string_value = v) @>
-      elif v.wstring_value <> "" then
-          let v = v.wstring_value in <@ Variant(wstring_value = v) @>
-      else
-          <@ Variant() @>
+    if v.nothing then
+        <@ Variant(nothing = true) @>
+    elif v.int_value <> 0L then
+        let v = v.int_value in <@ Variant(int_value = v) @>
+    elif v.uint_value <> 0uL then
+        let v = v.uint_value in <@ Variant(uint_value = v) @>
+    elif v.double_value <> 0.0 then
+        let v = v.double_value in <@ Variant(double_value = v) @>
+    elif v.string_value <> "" then
+        let v = v.string_value in <@ Variant(string_value = v) @>
+    elif v.wstring_value <> "" then
+        let v = v.wstring_value in <@ Variant(wstring_value = v) @>
+    else
+        <@ Variant() @>
 
   /// Given a Metadata, produce an equivalent quotation
   let quoteMetadata (m : Metadata) =
-      let qn = m.qualified_name
-      let nm = m.name
-      let md = m.modifier
-      <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
-
+    let qn = m.qualified_name
+    let nm = m.name
+    let md = m.modifier
+    <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
 
 type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<Type>>, tp : TP) =
-  let structsFrom idx =
-      let rec structComponents (t : TypeDef) =
-          if t.id = BondDataType.BT_STRUCT then Set.singleton t.struct_def
-          elif t.element = null then Set.empty
-          else
-              match t.id with
-              | BondDataType.BT_LIST | BondDataType.BT_SET ->
-                  structComponents t.element
-              | BondDataType.BT_MAP ->
-                  Set.union (structComponents t.element) (structComponents t.key)
-              | BondDataType.BT_STRUCT ->
-                  Set.singleton t.struct_def
-              | _ -> Set.empty
-      let rec loop seen idx =
-          let frontier =
-              s.structs.[int idx].fields
-              |> Seq.map (fun f -> structComponents f.``type``)
-              |> Set.unionMany
-          if Set.isSubset frontier seen then seen
-          else
-              frontier - seen
-              |> Set.fold loop (Set.union seen frontier)
-      loop Set.empty idx
+  let relatedStructs =
+    let rec loop seen idx =
+      let frontier =
+        s.structs.[int idx].fields
+        |> Seq.map (fun f -> structComponents f.``type``)
+        |> Set.unionMany
+      if Set.isSubset frontier seen then seen
+      else
+        frontier - seen
+        |> Set.fold loop (Set.union seen frontier)
+    and structComponents (t : TypeDef) =
+      match t.element with
+      | null -> Set.empty
+      | _ ->
+      match t.id with
+      | BondDataType.BT_STRUCT -> Set.singleton t.struct_def
+      | BondDataType.BT_LIST | BondDataType.BT_SET ->
+        structComponents t.element
+      | BondDataType.BT_MAP ->
+        Set.union (structComponents t.element) (structComponents t.key)
+      | _ -> Set.empty
+    loop Set.empty idx |> Set.add idx
 
   /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
   let fieldsFor i =
-      [for f in s.structs.[i].fields ->
-          { id = f.id; metadata = f.metadata; defaultExpr = tp.DefaultExpr f.``type`` f.metadata.default_value; defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
+      [ for f in s.structs.[i].fields ->
+          { id = f.id; metadata = f.metadata
+            defaultExpr  = tp.DefaultExpr  f.``type`` f.metadata.default_value
+            defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value
+            fieldType = f.``type`` }]
       |> List.sortBy (fun fi -> fi.id)
 
-  let relatedStructs =
-      structsFrom (uint16 idx)
-      |> Set.add (uint16 idx)
+  static let rec mkFnTy (dom::tys) =
+      let rng =
+          match tys with
+          | [rng] -> rng
+          | l -> mkFnTy l
+      Reflection.FSharpType.MakeFunctionType(dom, rng)
 
-  let serializers (serializerVars : IDictionary<uint16, Quotations.Var>) relatedStructs =
-      [for (KeyValue(idx, serializerVar)) in serializerVars ->
+  let serializerVars =
+    relatedStructs
+    |> Seq.map (fun i -> i, Quotations.Var(sprintf "write%i" i, mkFnTy [typeof<IProtocolWriter>; tupTys.[i].Value; typeof<unit>]))
+    |> dict
+
+  let serializers =
+      [ for (KeyValue(idx, serializerVar)) in serializerVars ->
           let writeVarExprs = [for i in relatedStructs ->
                                   i,
                                   fun wrtr e ->
@@ -202,8 +215,12 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
     else
       QExpr.NewObject(tupTy.GetConstructors().[0], expr)
 
+  let taggedDeserializerVars =
+    relatedStructs
+    |> Seq.map (fun i -> i, Quotations.Var(sprintf "tagged_read%i" i, mkFnTy [typeof<ITaggedProtocolReader>; tupTys.[i].Value]))
+    |> dict
 
-  let taggedDeserializers (taggedDeserializerVars : IDictionary<uint16, Quotations.Var>) relatedStructs =
+  let taggedDeserializers =
       [for (KeyValue(idx, deserializerVar)) in taggedDeserializerVars ->
           let makeVarExprs = [for i in relatedStructs ->
                                   i,
@@ -282,8 +299,12 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
                   |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
 
           deserializerVar, deserializerExpr]
+  let untaggedDeserializerVars =
+    relatedStructs
+    |> Seq.map (fun i -> i, Quotations.Var(sprintf "untagged_read%i" i, mkFnTy [typeof<IUntaggedProtocolReader>; tupTys.[i].Value]))
+    |> dict
 
-  let untaggedDeserializers (untaggedDeserializerVars : IDictionary<uint16, Quotations.Var>) relatedStructs =
+  let untaggedDeserializers =
       [for (KeyValue(idx,deserializerVar)) in untaggedDeserializerVars ->
           let makeVarExprs = [for i in relatedStructs ->
                                   i,
@@ -328,34 +349,12 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
 
           deserializerVar, deserializerExpr]
 
-  let rec mkFnTy (dom::tys) =
-      let rng =
-          match tys with
-          | [rng] -> rng
-          | l -> mkFnTy l
-      Reflection.FSharpType.MakeFunctionType(dom, rng)
-
-  member __.TaggedDeserializerVars =
-    relatedStructs
-    |> Seq.map (fun i -> i, Quotations.Var(sprintf "tagged_read%i" i, mkFnTy [typeof<ITaggedProtocolReader>; tupTys.[i].Value]))
-    |> dict
-  member this.TaggedDeserializers = 
-    taggedDeserializers (this.TaggedDeserializerVars) relatedStructs
-  member __.UntaggedDeserializerVars =
-    relatedStructs
-    |> Seq.map (fun i -> i, Quotations.Var(sprintf "untagged_read%i" i, mkFnTy [typeof<IUntaggedProtocolReader>; tupTys.[i].Value]))
-    |> dict
-  member this.UntaggedDeserializers = 
-    untaggedDeserializers (this.UntaggedDeserializerVars) relatedStructs
-  member __.SerializerVars =
-    relatedStructs
-    |> Seq.map (fun i -> i, Quotations.Var(sprintf "write%i" i, mkFnTy [typeof<IProtocolWriter>; tupTys.[i].Value; typeof<unit>]))
-    |> dict
-  member this.Serializers = serializers (this.SerializerVars) relatedStructs
-  member __.FieldsFor =
-    /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
-      [for f in s.structs.[int idx].fields ->
-          { id = f.id; metadata = f.metadata; defaultExpr = tp.DefaultExpr f.``type`` f.metadata.default_value; defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
-      |> List.sortBy (fun fi -> fi.id)
+  member __.TaggedDeserializerVars = taggedDeserializerVars
+  member __.TaggedDeserializers = taggedDeserializers
+  member __.UntaggedDeserializerVars = untaggedDeserializerVars
+  member __.UntaggedDeserializers = untaggedDeserializers
+  member __.SerializerVars = serializerVars
+  member __.Serializers = serializers
+  member __.FieldsFor = fieldsFor <| int idx
 
   static member NewTuple e = NewTuple_ e
