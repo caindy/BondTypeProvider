@@ -69,112 +69,96 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
       | _ -> Set.empty
     loop Set.empty idx |> Set.add idx
 
-  /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
+  /// Gets the list of (field ID, metadata, default value (expression), field type) for each field
+  /// in the nth type
   let fieldsFor i =
-      [ for f in s.structs.[i].fields ->
-          { id = f.id; metadata = f.metadata
-            defaultExpr  = tp.DefaultExpr  f.``type`` f.metadata.default_value
-            defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value
-            fieldType = f.``type`` }]
-      |> List.sortBy (fun fi -> fi.id)
+    [ for f in s.structs.[i].fields ->
+        { id = f.id; metadata = f.metadata
+          defaultExpr  = tp.DefaultExpr  f.``type`` f.metadata.default_value
+          defaultValue = tp.DefaultValue f.``type`` f.metadata.default_value
+          fieldType = f.``type`` }]
+    |> List.sortBy (fun fi -> fi.id)
 
-  static let rec mkFnTy (dom::tys) =
-      let rng =
-          match tys with
-          | [rng] -> rng
-          | l -> mkFnTy l
-      Reflection.FSharpType.MakeFunctionType(dom, rng)
+  static let rec mkFnTy (dom :: tys) =
+    let rng =
+      match tys with
+      | [rng] -> rng
+      | l -> mkFnTy l
+    Reflection.FSharpType.MakeFunctionType(dom, rng)
 
   let serializerVars =
     relatedStructs
     |> Seq.map (fun i -> i, Quotations.Var(sprintf "write%i" i, mkFnTy [typeof<IProtocolWriter>; tupTys.[i].Value; typeof<unit>]))
     |> dict
 
+  static let _lambda var body = QExpr.Lambda (var, body)
+  static let _application var body = QExpr.Application (var, body)
+  static let _let var letexpr body = QExpr.Let (var, letexpr, body)
+  static let _sequential first second = QExpr.Sequential(first, second)
   let serializers =
-      [ for (KeyValue(idx, serializerVar)) in serializerVars ->
-          let writeVarExprs = [for i in relatedStructs ->
-                                  i,
-                                  fun wrtr e ->
-                                      QExpr.Application(QExpr.Application(QExpr.Var serializerVars.[i], wrtr), QExpr.Coerce(e, tupTys.[i].Value))] |> dict
-//                          let write (ipw : IProtocolWriter) =
-//                              ipw.WriteStructBegin(structMeta)
-//
-//                              if tupGet 1 <> def then
-//                                  ipw.WriteFieldBegin(BondDataType.BT_INT32, 1, valueMeta)
-//                                  ipw.WriteInt32(tupGet n)
-//                                  ipw.WriteFieldEnd()
-//                              else
-//                                  ipw.WriteFieldOmitted(BondDataType.BT_INT32, 1, valueMeta)
-//
-//                              if (tupGet 2).Count <> 0 then
-//                                  ipw.WriteFieldBegin(BondDataType.BT_LIST, 2, childrenMeta)
-//                                  // loop
-//                                  ipw.WriteFieldEnd()
-//                              else
-//                                  ipw.WriteFieldOmitted(BondDataType.BT_INT32, 2, childrenMeta)
-//
-//                              ipw.WriteStructEnd(false)
-//                          write wrtr
+    [ for (KeyValue(idx, serializerVar)) in serializerVars ->
+        let writeVarExprs =
+          [ for i in relatedStructs ->
+             i, fun wrtr e ->
+                let coerce = QExpr.Coerce(e, tupTys.[i].Value)
+                let var = QExpr.Var serializerVars.[i]
+                _application <| _application var coerce <| wrtr ]
+          |> dict
+        let write  = Quotations.Var("write", typeof<IProtocolWriter -> unit>)
+        let writer = Quotations.Var("wrtr",  typeof<IProtocolWriter>)
+        let value  = Quotations.Var("value", tupTys.[idx].Value)
+        let ipw    = Quotations.Var("ipw",   typeof<IProtocolWriter>)
 
+        let writeBody =
+          let writer = QExpr.Cast<IProtocolWriter>(QExpr.Var writer)
+          let write = QExpr.Cast<IProtocolWriter->unit>(QExpr.Var write)
+          <@ (%write) %writer @>
 
-          let writer = Quotations.Var("wrtr", typeof<IProtocolWriter>)
-          let value = Quotations.Var("value", tupTys.[idx].Value)
-          let serializerExpr =
-              QExpr.Lambda(writer,
-                  QExpr.Lambda(value,
-                      let writer = QExpr.Cast<IProtocolWriter>(QExpr.Var writer)
-                      let write = Quotations.Var("write", typeof<IProtocolWriter -> unit>)
-                      QExpr.Let(
-                          write,
-                          (let ipw = Quotations.Var("ipw", typeof<IProtocolWriter>)
-                           QExpr.Lambda(ipw,
-                              let ipw = QExpr.Cast<IProtocolWriter>(QExpr.Var ipw)
+        let writeExpr =
+          let ipw = QExpr.Cast<IProtocolWriter>(QExpr.Var ipw)
+          let writeStruct =
+            let writeBegin = <@ (%ipw).WriteStructBegin((%SchemaQuotation.quoteMetadata s.structs.[int idx].metadata)) @>
+            let mapFields idx fieldInfo =
+              let id = fieldInfo.id
+              let elt = QExpr.TupleGet(QExpr.Var value, idx)
+              let bondTyIsContainer = function
+              | BondDataType.BT_LIST | BondDataType.BT_SET | BondDataType.BT_MAP -> true
+              | _ -> false
+              let cond =  // val <> default  (or val.Count <> 0)
+                if not (bondTyIsContainer fieldInfo.fieldType.id) then
+                    let (Quotations.Patterns.Call(_,neq,[_;_])) = <@ 1 <> 2 @>
+                    QExpr.Call(neq.GetGenericMethodDefinition().MakeGenericMethod(fieldInfo.defaultExpr.Type), [elt; fieldInfo.defaultExpr])
+                else
+                    // not {List,Set,Map}.isEmpty
+                    let (Quotations.Patterns.Call(None,m,[_])) =
+                        match fieldInfo.fieldType.id with
+                        | BondDataType.BT_LIST -> <@ List.isEmpty [] @>
+                        | BondDataType.BT_SET -> <@ Set.isEmpty Set.empty @>
+                        | BondDataType.BT_MAP -> <@ Map.isEmpty Map.empty @>
+                    <@@ not (%%QExpr.Call(m.GetGenericMethodDefinition().MakeGenericMethod(elt.Type.GetGenericArguments()), [elt])) @@>
 
-                              QExpr.Sequential(
-                                  let writeBegin = <@ (%ipw).WriteStructBegin((%SchemaQuotation.quoteMetadata s.structs.[int idx].metadata)) @>
-                                  let writeFields =
-                                      fieldsFor (int idx)
-                                      |> List.mapi (fun idx fieldInfo ->
-                                                      let id = fieldInfo.id
-                                                      let elt = QExpr.TupleGet(QExpr.Var value, idx)
+              let bondTy = fieldInfo.fieldType.id
+              let writeField =
+                <@ (%ipw).WriteFieldBegin(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata)
+                   (%%tp.WriterForBondType fieldInfo.fieldType ipw elt writeVarExprs) ((%ipw).WriteFieldEnd()) @>
+              if fieldInfo.metadata.modifier <> Modifier.Optional then
+                 // if the field is required, always write it
+                 writeField
+              else
+                 // otherwise, perform default check to see if we must write it
+                 <@ if %%cond then
+                         %writeField
+                     else
+                         (%ipw).WriteFieldOmitted(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata) @>
+            let writeFields = fieldsFor (int idx) |> List.mapi mapFields
+            writeBegin :: writeFields |> List.reduce (fun q1 q2 -> <@ %q1; %q2 @>)
+          _sequential writeStruct <@ (%ipw).WriteStructEnd() @>
 
-                                                      let bondTyIsContainer = function
-                                                      | BondDataType.BT_LIST | BondDataType.BT_SET | BondDataType.BT_MAP -> true
-                                                      | _ -> false
+        let serializerExpr =
+          _lambda writer << _lambda value <|
+          _let write (_lambda ipw writeExpr) writeBody
 
-                                                      let cond =  // val <> default  (or val.Count <> 0)
-                                                          if not (bondTyIsContainer fieldInfo.fieldType.id) then
-                                                              let (Quotations.Patterns.Call(_,neq,[_;_])) = <@ 1 <> 2 @>
-                                                              QExpr.Call(neq.GetGenericMethodDefinition().MakeGenericMethod(fieldInfo.defaultExpr.Type), [elt; fieldInfo.defaultExpr])
-                                                          else
-                                                              // not {List,Set,Map}.isEmpty
-                                                              let (Quotations.Patterns.Call(None,m,[_])) =
-                                                                  match fieldInfo.fieldType.id with
-                                                                  | BondDataType.BT_LIST -> <@ List.isEmpty [] @>
-                                                                  | BondDataType.BT_SET -> <@ Set.isEmpty Set.empty @>
-                                                                  | BondDataType.BT_MAP -> <@ Map.isEmpty Map.empty @>
-                                                              <@@ not (%%QExpr.Call(m.GetGenericMethodDefinition().MakeGenericMethod(elt.Type.GetGenericArguments()), [elt])) @@>
-
-                                                      let bondTy = fieldInfo.fieldType.id
-                                                      let writeField =
-                                                          <@ (%ipw).WriteFieldBegin(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata)
-                                                             (%%tp.WriterForBondType fieldInfo.fieldType ipw elt writeVarExprs)
-                                                             (%ipw).WriteFieldEnd() @>
-                                                      if fieldInfo.metadata.modifier <> Modifier.Optional then
-                                                          // if the field is required, always write it
-                                                          writeField
-                                                      else
-                                                          // otherwise, perform default check to see if we must write it
-                                                          <@ if %%cond then
-                                                                  %writeField
-                                                              else
-                                                                  (%ipw).WriteFieldOmitted(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata) @>)
-                                  writeBegin :: writeFields |> List.reduce (fun q1 q2 -> <@ %q1; %q2 @>),
-                                  <@ (%ipw).WriteStructEnd() @>))),
-
-                          let write = QExpr.Cast<IProtocolWriter->unit>(QExpr.Var write)
-                          <@ (%write) %writer @>)))
-          serializerVar, serializerExpr]
+        serializerVar, serializerExpr]
 
   let structFieldVarsAndVals idx =
       fieldsFor (int idx)
