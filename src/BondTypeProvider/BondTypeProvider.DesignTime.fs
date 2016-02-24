@@ -11,18 +11,6 @@ open FSharp.Core.CompilerServices
 open Bond
 open Bond.Protocols
 open Bond.IO.Unsafe
-open Bond.TypeProvider.Quotations
-
-// Hard to create quotations calling methods without arguments, so wrap instead
-module RuntimeHelpers =
-  let ReadFieldBegin(reader : ITaggedProtocolReader) =
-      reader.ReadFieldBegin()
-
-  let ReadContainerBegin(reader : ITaggedProtocolReader) : _*_ =
-      reader.ReadContainerBegin()
-
-  let ReadKeyValueContainerBegin(reader : ITaggedProtocolReader) : _*_*_ =
-      reader.ReadContainerBegin()
 
 type private fieldInfo = { id : uint16; metadata : Metadata; defaultExpr : Quotations.Expr; defaultValue : obj; fieldType : TypeDef }
 
@@ -61,8 +49,7 @@ module private SchemaQuotation =
       let md = m.modifier
       <@ Metadata(qualified_name = qn, name = nm, modifier = md, default_value = %(quoteVariant m.default_value), attributes = %(quoteDict m.attributes)) @>
 
-type QExpr   = Quotations.Expr
-module QPat  = Quotations.Patterns
+
 [<TypeProvider>]
 type public BondTypeProvider(cfg : TypeProviderConfig) =
     inherit TypeProviderForNamespaces()
@@ -122,6 +109,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
 
         /// maps struct IDs to provided type
         let provTys = Dictionary()
+        let typeForBondType = TP.typeForBondType provTys
 
         /// maps struct i => Tuple<...>
         let tupTys = Dictionary()
@@ -151,365 +139,13 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                     |> Set.fold loop (Set.union seen frontier)
             loop Set.empty idx
 
-        /// gets the representation type and full (unerased) type corresponding to the given TypeDef
-        let rec typeForBondType (t : TypeDef) =
-            match t.id with
-            | BondDataType.BT_BOOL ->    typeof<bool>   , typeof<bool>
-            | BondDataType.BT_DOUBLE ->  typeof<float>  , typeof<float>
-            | BondDataType.BT_FLOAT ->   typeof<float32>, typeof<float32>
-            | BondDataType.BT_INT16 ->   typeof<int16>  , typeof<int16>
-            | BondDataType.BT_INT32 ->   typeof<int>    , typeof<int>
-            | BondDataType.BT_INT64 ->   typeof<int64>  , typeof<int64>
-            | BondDataType.BT_INT8  ->   typeof<sbyte>  , typeof<sbyte>
-            | BondDataType.BT_UINT16 ->  typeof<uint16> , typeof<uint16>
-            | BondDataType.BT_UINT32 ->  typeof<uint32> , typeof<uint32>
-            | BondDataType.BT_UINT64 ->  typeof<uint64> , typeof<uint64>
-            | BondDataType.BT_UINT8  ->  typeof<byte>   , typeof<byte>
-            | BondDataType.BT_STRING ->  typeof<string> , typeof<string>
-            | BondDataType.BT_WSTRING -> typeof<string> , typeof<string>
-            | BondDataType.BT_STRUCT -> typeof<obj>, provTys.[t.struct_def]
-            | BondDataType.BT_LIST ->
-                let mkTy t =
-                    let tyDef = typedefof<_ list>
-                    tyDef.MakeGenericType([|t|])
-                let repr, full = typeForBondType t.element
-                mkTy repr, mkTy full
-            | BondDataType.BT_MAP ->
-                let mkTy k v =
-                    let tyDef = typedefof<Map<_,_>>
-                    tyDef.MakeGenericType([|k;v|])
-                let krepr, kfull = typeForBondType t.key
-                let vrepr, vfull = typeForBondType t.element
-                mkTy krepr vrepr, mkTy kfull vfull
-            | BondDataType.BT_SET ->
-                let mkTy t =
-                    let tyDef = typedefof<Set<_>>
-                    tyDef.MakeGenericType([|t|])
-                let repr, full = typeForBondType t.element
-                mkTy repr, mkTy full
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-
-        let zeroCreate ty = match <@ Array.zeroCreate 0 @> with | QPat.Call(None,zeroCreate,[_]) -> zeroCreate.GetGenericMethodDefinition().MakeGenericMethod([|ty|])
-        let setArray ty = match <@ [| |].[0] <- 0 @> with | QPat.Call(None,setArray,[_;_;_]) -> setArray.GetGenericMethodDefinition().MakeGenericMethod([|ty|])
-        let toList ty = match <@ Array.toList [| |] @> with | QPat.Call(None,toList,[_]) -> toList.GetGenericMethodDefinition().MakeGenericMethod([|ty|])
-        let setOfArray ty = match <@ Set.ofArray [| |] @> with | QPat.Call(None,ofArray,[_]) -> ofArray.GetGenericMethodDefinition().MakeGenericMethod([|ty|])
-        let mapOfArray keyRep elRep = match <@ Map.ofArray [| |] @> with | QPat.Call(None,ofArray,[_]) -> ofArray.GetGenericMethodDefinition().MakeGenericMethod([|keyRep; elRep|])
-
-        let readContainer ct elRep readEl readEnd =
-            // produces a quotation like:
-            //    <@ let arr = Array.zeroCreate<_> (int ct)
-            //       for i = 0 to ct - 1 do
-            //           arr.[i] <- readEl
-            //       readEnd
-            //       arr@>
-            let arrRep = (elRep : Type).MakeArrayType()
-            let arr = Quotations.Var("arr", arrRep)
-            let i = Quotations.Var("i", typeof<int>)
-            QExpr.Let(arr, QExpr.Call(zeroCreate elRep, [ QExpr.Var ct ]),
-                QExpr.Sequential(
-                    QExpr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(QExpr.Var ct) : int) - 1 @>,
-                        QExpr.Call(setArray elRep, [QExpr.Var arr; QExpr.Var i; readEl])),
-                    QExpr.Sequential(
-                        readEnd, QExpr.Var arr)))
-
-        let readKeyValueContainer ct keyRep valRep readKey readVal readEnd =
-            // produces a quotation like:
-            //    <@ let arr = Array.zeroCreate<_*_> (int ct)
-            //       for i = 0 to ct - 1 do
-            //           arr.[i] <- readKey, readVal
-            //       readEnd
-            //       arr @>
-            let tupRep = Reflection.FSharpType.MakeTupleType([|keyRep; valRep|])
-            let arrRep = tupRep.MakeArrayType()
-            let arr = Quotations.Var("arr", arrRep)
-            let i = Quotations.Var("i", typeof<int>)
-            QExpr.Let(arr, QExpr.Call(zeroCreate tupRep, [ QExpr.Var ct ]),
-                QExpr.Sequential(
-                    QExpr.ForIntegerRangeLoop(i, <@ 0 @>, <@ (%%(QExpr.Var ct) : int) - 1 @>,
-                        QExpr.Call(setArray tupRep, [QExpr.Var arr; QExpr.Var i; QExpr.NewTuple [readKey; readVal]])),
-                    QExpr.Sequential(
-                        readEnd, QExpr.Var arr)))
-
-        /// Given a TypeDef, an expression for an ITaggedProtocolReader and a dictionary mapping struct IDs to readers,
-        /// produces an expression that reads the corresponding type of value from a reader
-        // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-        let rec taggedReader (t:TypeDef) : Quotations.Expr<ITaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
-            match t.id with
-            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
-            | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
-            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@>
-            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@>
-            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@>
-            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@>
-            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@>
-            | BondDataType.BT_UINT16 ->  fun rdr _ -> <@@ (%rdr).ReadUInt16() @@>
-            | BondDataType.BT_UINT32 ->  fun rdr _ -> <@@ (%rdr).ReadUInt32() @@>
-            | BondDataType.BT_UINT64 ->  fun rdr _ -> <@@ (%rdr).ReadUInt64() @@>
-            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@>
-            | BondDataType.BT_STRING ->  fun rdr _ -> <@@ (%rdr).ReadString() @@>
-            | BondDataType.BT_WSTRING -> fun rdr _ -> <@@ (%rdr).ReadWString() @@>
-            | BondDataType.BT_STRUCT ->  fun rdr d -> d.[t.struct_def] rdr
-            | BondDataType.BT_LIST
-            | BondDataType.BT_SET ->
-                    // produces a quotation like:
-                    //    <@ let ct,_ = Helpers.ReadContainerBegin(rdr)
-                    //       let arr = Array.zeroCreate<_> (int ct)
-                    //       for i = 0 to ct - 1 do
-                    //           arr.[i] <- read rdr
-                    //       rdr.ReadContainerEnd()
-                    //       Array.toList/Set.ofArray arr @>
-                    let elRep, _ = typeForBondType t.element
-                    let convertArray = if t.id = BondDataType.BT_LIST then toList elRep else setOfArray elRep
-                    fun rdr provFns ->
-                        let read = taggedReader t.element rdr provFns
-                        let ct = Quotations.Var("ct", typeof<int>)
-                        QExpr.Let(ct, QExpr.TupleGet(<@@ RuntimeHelpers.ReadContainerBegin %rdr @@>, 0),
-                            QExpr.Call(convertArray,
-                                [readContainer ct elRep read <@@ (%rdr).ReadContainerEnd() @@>]))
-
-            | BondDataType.BT_MAP ->
-                    // produces a quotation like:
-                    //    <@ let ct,_,_ = Helpers.ReadKeyValueContainerBegin(rdr)
-                    //       let arr = Array.zeroCreate<_*_> (int ct)
-                    //       for i = 0 to ct - 1 do
-                    //           arr.[i] <- readKey rdr, readVal rdr
-                    //       rdr.ReadContainerEnd()
-                    //       Map.ofArray arr @>
-                    let elRep, _ = typeForBondType t.element
-                    let keyRep, _ = typeForBondType t.key
-                    fun rdr provFns ->
-                        let readKey = taggedReader t.key rdr provFns
-                        let readEl = taggedReader t.element rdr provFns
-                        let ct = Quotations.Var("ct", typeof<int>)
-                        QExpr.Let(ct, QExpr.TupleGet(<@@ RuntimeHelpers.ReadKeyValueContainerBegin %rdr @@>, 0),
-                            QExpr.Call(mapOfArray keyRep elRep,
-                                [readKeyValueContainer ct keyRep elRep readKey readEl <@@ (%rdr).ReadContainerEnd() @@>]))
-
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-
-
-        /// Given a TypeDef, an expression for an IUntaggedProtocolReader and a dictionary mapping struct IDs to readers,
-        /// produces an expression that reads the corresponding type of value from a reader
-        // TODO: Use ReadHelper to make this more flexible (e.g. integral promotion)
-        let rec untaggedReader (t:TypeDef) : Quotations.Expr<IUntaggedProtocolReader> -> IDictionary<uint16,_> -> _ =
-            match t.id with
-            | BondDataType.BT_BOOL ->    fun rdr _ -> <@@ (%rdr).ReadBool() @@>
-            | BondDataType.BT_DOUBLE ->  fun rdr _ -> <@@ (%rdr).ReadDouble() @@>
-            | BondDataType.BT_FLOAT ->   fun rdr _ -> <@@ (%rdr).ReadFloat() @@>
-            | BondDataType.BT_INT16 ->   fun rdr _ -> <@@ (%rdr).ReadInt16() @@>
-            | BondDataType.BT_INT32 ->   fun rdr _ -> <@@ (%rdr).ReadInt32() @@>
-            | BondDataType.BT_INT64 ->   fun rdr _ -> <@@ (%rdr).ReadInt64() @@>
-            | BondDataType.BT_INT8  ->   fun rdr _ -> <@@ (%rdr).ReadInt8() @@>
-            | BondDataType.BT_UINT16 ->  fun rdr _ -> <@@ (%rdr).ReadUInt16() @@>
-            | BondDataType.BT_UINT32 ->  fun rdr _ -> <@@ (%rdr).ReadUInt32() @@>
-            | BondDataType.BT_UINT64 ->  fun rdr _ -> <@@ (%rdr).ReadUInt64() @@>
-            | BondDataType.BT_UINT8  ->  fun rdr _ -> <@@ (%rdr).ReadUInt8() @@>
-            | BondDataType.BT_STRING ->  fun rdr _ -> <@@ (%rdr).ReadString() @@>
-            | BondDataType.BT_WSTRING -> fun rdr _ -> <@@ (%rdr).ReadWString() @@>
-            | BondDataType.BT_STRUCT ->  fun rdr d -> d.[t.struct_def] rdr
-            | BondDataType.BT_LIST
-            | BondDataType.BT_SET ->
-                    // produces a quotation like:
-                    //    <@ let ct,_ = rdr.ReadContainerBegin()
-                    //       let arr = Array.zeroCreate<_> (int ct)
-                    //       for i = 0 to ct - 1 do
-                    //           arr.[i] <- read rdr
-                    //       rdr.ReadContainerEnd()
-                    //       Array.toList/Set.ofArray arr @>
-                    let elRep, _ = typeForBondType t.element
-                    let convertArray = if t.id = BondDataType.BT_LIST then toList elRep else setOfArray elRep
-                    fun rdr provFns ->
-                        let read = untaggedReader t.element rdr provFns
-                        let ct = Quotations.Var("ct", typeof<int>)
-                        QExpr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
-                            QExpr.Call(convertArray,
-                                [readContainer ct elRep read <@@ (%rdr).ReadContainerEnd() @@>]))
-
-            | BondDataType.BT_MAP ->
-                    // produces a quotation like:
-                    //    <@ let ct,_,_ = rdr.ReadContainerBegin()
-                    //       let arr = Array.zeroCreate<_*_> (int ct)
-                    //       for i = 0 to ct - 1 do
-                    //           arr.[i] <- readKey rdr, readVal rdr
-                    //       rdr.ReadContainerEnd()
-                    //       Map.ofArray arr @>
-                    let elRep, _ = typeForBondType t.element
-                    let keyRep, _ = typeForBondType t.key
-                    fun rdr provFns ->
-                        let readKey = untaggedReader t.key rdr provFns
-                        let readEl = untaggedReader t.element rdr provFns
-                        let ct = Quotations.Var("ct", typeof<int>)
-                        QExpr.Let(ct, <@@ (%rdr).ReadContainerBegin() @@>,
-                            QExpr.Call(mapOfArray keyRep elRep,
-                                [readKeyValueContainer ct keyRep elRep readKey readEl <@@ (%rdr).ReadContainerEnd() @@>]))
-
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-
-
-        /// Given a TypeDef, an expression representing an IProtocolWriter, and an expression representing the value to write, produces an expression for writing the value
-        let rec writerForBondType (t:TypeDef) : Quotations.Expr<IProtocolWriter> -> _ -> IDictionary<uint16,_> -> _ =
-            match t.id with
-            | BondDataType.BT_BOOL ->    fun wrtr e _ -> <@@ (%wrtr).WriteBool(%%e) @@>
-            | BondDataType.BT_DOUBLE ->  fun wrtr e _ -> <@@ (%wrtr).WriteDouble(%%e) @@>
-            | BondDataType.BT_FLOAT ->   fun wrtr e _ -> <@@ (%wrtr).WriteFloat(%%e) @@>
-            | BondDataType.BT_INT16 ->   fun wrtr e _ -> <@@ (%wrtr).WriteInt16(%%e) @@>
-            | BondDataType.BT_INT32 ->   fun wrtr e _ -> <@@ (%wrtr).WriteInt32(%%e) @@>
-            | BondDataType.BT_INT64 ->   fun wrtr e _ -> <@@ (%wrtr).WriteInt64(%%e) @@>
-            | BondDataType.BT_INT8  ->   fun wrtr e _ -> <@@ (%wrtr).WriteInt8(%%e) @@>
-            | BondDataType.BT_UINT16 ->  fun wrtr e _ -> <@@ (%wrtr).WriteUInt16(%%e) @@>
-            | BondDataType.BT_UINT32 ->  fun wrtr e _ -> <@@ (%wrtr).WriteUInt32(%%e) @@>
-            | BondDataType.BT_UINT64 ->  fun wrtr e _ -> <@@ (%wrtr).WriteUInt64(%%e) @@>
-            | BondDataType.BT_UINT8  ->  fun wrtr e _ -> <@@ (%wrtr).WriteUInt8(%%e) @@>
-            | BondDataType.BT_STRING ->  fun wrtr e _ -> <@@ (%wrtr).WriteString(%%e) @@>
-            | BondDataType.BT_WSTRING -> fun wrtr e _ -> <@@ (%wrtr).WriteWString(%%e) @@>
-            | BondDataType.BT_STRUCT ->  fun wrtr e d -> d.[t.struct_def] wrtr e
-            | BondDataType.BT_LIST ->
-                // produces a quotation like:
-                //    <@ wrtr.WriteContainerBegin(l.Count, dataType)
-                //       for e in l do
-                //           write wrtr e
-                //       wrtr.WriteContainerEnd() @>
-                let lstRep, _ = typeForBondType t
-                let elRep, _ = typeForBondType t.element
-                let wrtrGen = writerForBondType t.element
-                let lenProp = lstRep.GetProperty("Length")
-                fun wrtr lstExpr d ->
-                    let write e = wrtrGen wrtr e d
-                    QExpr.Sequential(
-                        let dataType = t.element.id
-                        <@@ (%wrtr).WriteContainerBegin((%%QExpr.PropertyGet(lstExpr, lenProp) : int), dataType) @@>,
-                        QExpr.Sequential(
-                            let e = Quotations.Var("e", elRep)
-                            Expr.For(e, lstExpr, write (QExpr.Var e)),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))
-            | BondDataType.BT_SET ->
-                // produces a quotation like:
-                //    <@ wrtr.WriteContainerBegin(s.Count, dataType)
-                //       for e in s do
-                //           write wrtr e
-                //       wrtr.WriteContainerEnd() @>
-                let setRep, _ = typeForBondType t
-                let elRep, _ = typeForBondType t.element
-                let wrtrGen = writerForBondType t.element
-                let lenProp = setRep.GetProperty("Count")
-                fun wrtr setExpr d ->
-                    let write e = wrtrGen wrtr e d
-                    QExpr.Sequential(
-                        let dataType = t.element.id
-                        <@@ (%wrtr).WriteContainerBegin((%%QExpr.PropertyGet(setExpr, lenProp) : int), dataType) @@>,
-                        QExpr.Sequential(
-                            let e = Quotations.Var("e", elRep)
-                            Expr.For(e, setExpr, write (QExpr.Var e)),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))
-
-            | BondDataType.BT_MAP ->
-                // produces a quotation like:
-                //    <@ wrtr.WriteContainerBegin(s.Count, keyDataType, elDataType)
-                //       for e in s do
-                //           write wrtr e
-                //       wrtr.WriteContainerEnd() @>
-                let dictRep, _ = typeForBondType t
-                let elRep, _ = typeForBondType t.element
-                let keyRep, _ = typeForBondType t.key
-                let elWrtrGen = writerForBondType t.element
-                let keyWrtrGen = writerForBondType t.key
-                let lenProp = dictRep.GetProperty("Count")
-                fun wrtr dictExpr d ->
-                    let writeKey e = keyWrtrGen wrtr e d
-                    let writeEl e = elWrtrGen wrtr e d
-                    QExpr.Sequential(
-                        let elType = t.element.id
-                        let keyType = t.key.id
-                        <@@ (%wrtr).WriteContainerBegin((%%QExpr.PropertyGet(dictExpr, lenProp) : int), keyType, elType) @@>,
-                        QExpr.Sequential(
-                            let itemType = typedefof<KeyValuePair<_,_>>.MakeGenericType(keyRep, elRep)
-                            let kvp = Quotations.Var("kvp", itemType)
-                            Expr.For(kvp, dictExpr, QExpr.Sequential(writeKey (QExpr.PropertyGet(QExpr.Var kvp, itemType.GetProperty("Key"))), writeEl (QExpr.PropertyGet(QExpr.Var kvp, itemType.GetProperty("Value"))))),
-                            <@@ (%wrtr).WriteContainerEnd() @@>))
-
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-
-        let rootStruct = schemaContents.structs.[int schemaContents.root.struct_def]
 
         let containerTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, tyName, None)
-
-        let bondTyIsContainer = function
-        | BondDataType.BT_LIST | BondDataType.BT_SET | BondDataType.BT_MAP -> true
-        | _ -> false
-
-        let rec defaultExpr (t:TypeDef) (v:Variant) =
-            match t.id with
-            | BondDataType.BT_BOOL ->   let b = v.uint_value <> 0UL       in <@@ b @@>
-            | BondDataType.BT_DOUBLE -> let f = v.double_value            in <@@ f @@>
-            | BondDataType.BT_FLOAT ->  let f = v.double_value |> float32 in <@@ f @@>
-            | BondDataType.BT_INT16 ->  let i = v.int_value |> int16      in <@@ i @@>
-            | BondDataType.BT_INT32 ->  let i = v.int_value |> int        in <@@ i @@>
-            | BondDataType.BT_INT64 ->  let i = v.int_value               in <@@ i @@>
-            | BondDataType.BT_INT8  ->  let i = v.int_value |> sbyte      in <@@ i @@>
-            | BondDataType.BT_UINT16 -> let i = v.uint_value |> uint16    in <@@ i @@>
-            | BondDataType.BT_UINT32 -> let i = v.uint_value |> uint32    in <@@ i @@>
-            | BondDataType.BT_UINT64 -> let i = v.uint_value |> uint64    in <@@ i @@>
-            | BondDataType.BT_UINT8  -> let i = v.uint_value |> byte      in <@@ i @@>
-            | BondDataType.BT_STRING -> let s = v.string_value            in <@@ s @@>
-            | BondDataType.BT_WSTRING -> let s = v.wstring_value          in <@@ s @@>
-            | BondDataType.BT_STRUCT -> <@@ null : obj @@>
-            | BondDataType.BT_LIST ->
-                let (ty,_) = typeForBondType t
-                QExpr.NewUnionCase(Reflection.FSharpType.GetUnionCases ty |> Array.find (fun uc -> uc.Name = "Empty"), [])
-            | BondDataType.BT_SET ->
-                let (elTy,_) = typeForBondType t.element
-                let (QPat.Call(None,emptyMethod,[])) = <@ Set.empty @>
-                QExpr.Call(emptyMethod.GetGenericMethodDefinition().MakeGenericMethod(elTy), [])
-            | BondDataType.BT_MAP ->
-                let (keyTy,_) = typeForBondType t.key
-                let (elTy,_) = typeForBondType t.element
-                let (QPat.Call(None,emptyMethod,[])) = <@ Map.empty @>
-                QExpr.Call(emptyMethod.GetGenericMethodDefinition().MakeGenericMethod(keyTy,elTy), [])
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
-
-        let rec defaultValue (t:TypeDef) (v:Variant) =
-            match t.id with
-            | BondDataType.BT_BOOL ->   v.uint_value <> 0UL       |> box
-            | BondDataType.BT_DOUBLE -> v.double_value            |> box
-            | BondDataType.BT_FLOAT ->  v.double_value |> float32 |> box
-            | BondDataType.BT_INT16 ->  v.int_value |> int16      |> box
-            | BondDataType.BT_INT32 ->  v.int_value |> int        |> box
-            | BondDataType.BT_INT64 ->  v.int_value               |> box
-            | BondDataType.BT_INT8  ->  v.int_value |> sbyte      |> box
-            | BondDataType.BT_UINT16 -> v.uint_value |> uint16    |> box
-            | BondDataType.BT_UINT32 -> v.uint_value |> uint32    |> box
-            | BondDataType.BT_UINT64 -> v.uint_value |> uint64    |> box
-            | BondDataType.BT_UINT8  -> v.uint_value |> byte      |> box
-            | BondDataType.BT_STRING -> v.string_value            |> box
-            | BondDataType.BT_WSTRING -> v.wstring_value          |> box
-            | BondDataType.BT_STRUCT
-            | BondDataType.BT_LIST
-            | BondDataType.BT_SET
-            | BondDataType.BT_MAP    -> null
-            | BondDataType.BT_STOP
-            | BondDataType.BT_STOP_BASE
-            | BondDataType.BT_UNAVAILABLE
-            | _ as ty -> failwith (sprintf "Unexpected BondDataType: %A" ty)
 
         /// Gets the list of (field ID, metadata, default value (expression), field type) for each field in the nth type
         let fieldsFor i =
             [for f in schemaContents.structs.[i].fields ->
-                { id = f.id; metadata = f.metadata; defaultExpr = defaultExpr f.``type`` f.metadata.default_value; defaultValue = defaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
+                { id = f.id; metadata = f.metadata; defaultExpr = TP.defaultExpr provTys f.``type`` f.metadata.default_value; defaultValue = TP.defaultValue f.``type`` f.metadata.default_value; fieldType = f.``type``}]
             |> List.sortBy (fun fi -> fi.id)
 
         containerTy.AddMembers(
@@ -614,13 +250,18 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                                         |> List.mapi (fun idx fieldInfo ->
                                                                         let id = fieldInfo.id
                                                                         let elt = QExpr.TupleGet(QExpr.Var value, idx)
+
+                                                                        let bondTyIsContainer = function
+                                                                        | BondDataType.BT_LIST | BondDataType.BT_SET | BondDataType.BT_MAP -> true
+                                                                        | _ -> false
+
                                                                         let cond =  // val <> default  (or val.Count <> 0)
                                                                             if not (bondTyIsContainer fieldInfo.fieldType.id) then
-                                                                                let (QPat.Call(_,neq,[_;_])) = <@ 1 <> 2 @>
+                                                                                let (Quotations.Patterns.Call(_,neq,[_;_])) = <@ 1 <> 2 @>
                                                                                 QExpr.Call(neq.GetGenericMethodDefinition().MakeGenericMethod(fieldInfo.defaultExpr.Type), [elt; fieldInfo.defaultExpr])
                                                                             else
                                                                                 // not {List,Set,Map}.isEmpty
-                                                                                let (QPat.Call(None,m,[_])) =
+                                                                                let (Quotations.Patterns.Call(None,m,[_])) =
                                                                                     match fieldInfo.fieldType.id with
                                                                                     | BondDataType.BT_LIST -> <@ List.isEmpty [] @>
                                                                                     | BondDataType.BT_SET -> <@ Set.isEmpty Set.empty @>
@@ -630,7 +271,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                                                         let bondTy = fieldInfo.fieldType.id
                                                                         let writeField =
                                                                             <@ (%ipw).WriteFieldBegin(bondTy, id, %SchemaQuotation.quoteMetadata fieldInfo.metadata)
-                                                                               (%%writerForBondType fieldInfo.fieldType ipw elt writeVarExprs)
+                                                                               (%%TP.writerForBondType provTys fieldInfo.fieldType ipw elt writeVarExprs)
                                                                                (%ipw).WriteFieldEnd() @>
                                                                         if fieldInfo.metadata.modifier <> Modifier.Optional then
                                                                             // if the field is required, always write it
@@ -662,7 +303,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                         |> List.map (fun fieldInfo ->
                             let e = fieldInfo.defaultExpr
                             let refTy = typedefof<_ ref>.MakeGenericType(e.Type)
-                            let (QPat.Call(None,refGet,[_])) = <@ !(ref 0) @>
+                            let (Quotations.Patterns.Call(None,refGet,[_])) = <@ !(ref 0) @>
                             let var = Quotations.Var(fieldInfo.metadata.name, refTy)
                             var, QExpr.NewRecord(refTy, [e]), QExpr.Call(refGet.GetGenericMethodDefinition().MakeGenericMethod(e.Type), [QExpr.Var var]))
                         |> List.toArray
@@ -670,9 +311,9 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                     // inline fieldswitch instead of having it be a function
                     let simplify e =
                         let rec simplify = function
-                        | QPat.Application(QPat.Lambda(v,e), QPat.Var v') ->
+                        | Quotations.Patterns.Application(Quotations.Patterns.Lambda(v,e), Quotations.Patterns.Var v') ->
                             true, e.Substitute(fun v'' -> if v'' = v then Some(QExpr.Var v') else None) |> simplify |> snd
-                        | QPat.Application(f,b) as e ->
+                        | Quotations.Patterns.Application(f,b) as e ->
                             let sf, ef = simplify f
                             let sb, eb = simplify b
                             if sf || sb then true, QExpr.Application(ef, eb) |> simplify |> snd
@@ -724,9 +365,9 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                     fieldsFor (int idx)
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
-                                        let read = taggedReader fieldInfo.fieldType reader makeVarExprs
+                                        let read = TP.taggedReader provTys fieldInfo.fieldType reader makeVarExprs
                                         fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
-                                                let (QPat.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
+                                                let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
                                                 QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
                                     |> List.toArray
@@ -787,9 +428,9 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                                     fieldsFor (int idx)
                                     |> List.mapi (fun fldIdx fieldInfo ->
                                         let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
-                                        let read = untaggedReader fieldInfo.fieldType reader makeVarExprs
+                                        let read = TP.untaggedReader provTys fieldInfo.fieldType reader makeVarExprs
                                         fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
-                                                let (QPat.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
+                                                let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
                                                 let (var,_,_) = fieldVarsAndVals.[fldIdx]
                                                 QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (typeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
                                     |> List.toArray
