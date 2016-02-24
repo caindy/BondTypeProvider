@@ -53,6 +53,7 @@
     <Compile Include="ProvidedTypesContext.fs" />
     <Compile Include="ProvidedTypesTesting.fs" />
     <Compile Include="TypeProvider.fs" />
+    <Compile Include="TP2.fs" />
     <Compile Include="BondTypeProvider.DesignTime.fs" />
     <Compile Include="BondTypeProvider.fs" />
   </ItemGroup>
