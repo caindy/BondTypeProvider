@@ -35,7 +35,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
   let runtimeAssembly = typeof<BondTypeProvider>.Assembly
   let ns = "Bond.TypeProvider"
   let ctxt = ProviderImplementation.ProvidedTypesContext.Create(cfg)
-  let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", None)
+  let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", Some typeof<obj>)
   let filename = ctxt.ProvidedStaticParameter("FilePath", typeof<string>)
   let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // TODO former default: , int ProtocolType.MARSHALED_PROTOCOL)
 
@@ -84,7 +84,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
     let tupTys = Dictionary<uint16,Lazy<Type>>()
 
     /// transitive closure of related struct indices
-    let containerTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, tyName, None)
+    let containerTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, tyName, Some typeof<obj>)
 
     containerTy.AddMembers(
         schemaContents.structs
@@ -100,7 +100,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
               |> Reflection.FSharpType.MakeTupleType
 
             tupTys.[uint16 i]  <- reprTy
-            let stTy = ctxt.ProvidedTypeDefinition(st.metadata.name, None)
+            let stTy = ctxt.ProvidedTypeDefinition(st.metadata.name, Some typeof<obj>)
             provTys.[uint16 i] <- stTy
 
             stTy.AddMembersDelayed(fun () ->

@@ -16,21 +16,21 @@ open ProviderImplementation.ProvidedTypesTesting
 #load "./BondTypeProvider.DesignTime.fs"
 open Bond.TypeProvider.DesignTime
 open System.Reflection
-let cfg = Testing.MakeSimulatedTypeProviderConfig(__SOURCE_DIRECTORY__, typeof<BondTypeProvider>.Assembly.FullName, []) // CompilerServices.TypeProviderConfig(fun _ -> true)
-let b = new BondTypeProvider(cfg) :> FSharp.Core.CompilerServices.ITypeProvider
+(*
+let system = typeof<obj>.Assembly
+let cfg = Testing.MakeSimulatedTypeProviderConfig(__SOURCE_DIRECTORY__, typeof<BondTypeProvider>.Assembly.FullName, [system.FullName])
+let b = new BondTypeProvider(cfg) :> TypeProviderForNamespaces
 let tpns =
-  b.GetNamespaces()
-  |> Seq.find (fun t -> t.NamespaceName = "Bond.TypeProvider")
-
-let schemaTPType = tpns.ResolveTypeName("SchemaTypeProvider")
-let schemaTPParams = b.GetStaticParameters(schemaTPType)
-
-let staticParameterValues = 
-  [| for x in schemaTPParams -> 
-      (match x.Name with 
-      | "FilePath" -> box "../../tests/BondTypeProvider.Tests/unittest.schema.Nullable"
-      | "Protocol" -> box Bond.ProtocolType.MARSHALED_PROTOCOL
-      | _ -> box x.RawDefaultValue) |]
-
-let schemaTP = b.ApplyStaticArguments(schemaTPType, [|"MyScript"; "SchemaTypeProvider"|], staticParameterValues)
-
+  b.Namespaces
+  |> Seq.find (fun (name, t) -> name = "Bond.TypeProvider")
+  |> snd
+  |> Seq.head
+  *)
+let bondTpAsm = typeof<BondTypeProvider>.Assembly.FullName
+let args = [|box "../../tests/BondTypeProvider.Tests/unittest.schema.Nullable";
+             box Bond.ProtocolType.MARSHALED_PROTOCOL |]
+let refs = Targets.FSharpCore40Ref
+let system = typeof<obj>.Assembly
+let instance = Testing.GenerateProvidedTypeInstantiation(__SOURCE_DIRECTORY__, bondTpAsm, [refs], BondTypeProvider, args)
+//let instance = tpns.MakeParametricType("SchemaTypeProvider", args)
+instance |> Testing.FormatProvidedType
