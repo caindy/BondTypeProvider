@@ -86,16 +86,16 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
       | l -> mkFnTy l
     Reflection.FSharpType.MakeFunctionType(dom, rng)
 
-  let serializerVars =
+  let serializerVars = lazy (
     relatedStructs
     |> Seq.map (fun i -> i, Quotations.Var(sprintf "write%i" i, mkFnTy [typeof<IProtocolWriter>; tupTys.[i].Value; typeof<unit>]))
-    |> dict
+    |> dict)
 
   static let _lambda var body = QExpr.Lambda (var, body)
   static let _application var body = QExpr.Application (var, body)
   static let _let var letexpr body = QExpr.Let (var, letexpr, body)
   static let _sequential first second = QExpr.Sequential(first, second)
-  let serializers =
+  let serializers (Lazy (serializerVars : IDictionary<uint16, Quotations.Var>)) =
     [ for (KeyValue(idx, serializerVar)) in serializerVars ->
         let writeVarExprs =
           [ for i in relatedStructs ->
@@ -199,12 +199,12 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
     else
       QExpr.NewObject(tupTy.GetConstructors().[0], expr)
 
-  let taggedDeserializerVars =
+  let taggedDeserializerVars = lazy (
     relatedStructs
     |> Seq.map (fun i -> i, Quotations.Var(sprintf "tagged_read%i" i, mkFnTy [typeof<ITaggedProtocolReader>; tupTys.[i].Value]))
-    |> dict
+    |> dict )
 
-  let taggedDeserializers =
+  let taggedDeserializers (Lazy (taggedDeserializerVars : IDictionary<uint16, Quotations.Var>)) =
       [for (KeyValue(idx, deserializerVar)) in taggedDeserializerVars ->
           let makeVarExprs = [for i in relatedStructs ->
                                   i,
@@ -283,12 +283,13 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
                   |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
 
           deserializerVar, deserializerExpr]
-  let untaggedDeserializerVars =
+  
+  let untaggedDeserializerVars = lazy (
     relatedStructs
     |> Seq.map (fun i -> i, Quotations.Var(sprintf "untagged_read%i" i, mkFnTy [typeof<IUntaggedProtocolReader>; tupTys.[i].Value]))
-    |> dict
+    |> dict )
 
-  let untaggedDeserializers =
+  let untaggedDeserializers (Lazy (untaggedDeserializerVars : IDictionary<uint16, Quotations.Var>)) =
       [for (KeyValue(idx,deserializerVar)) in untaggedDeserializerVars ->
           let makeVarExprs = [for i in relatedStructs ->
                                   i,
@@ -334,11 +335,11 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
           deserializerVar, deserializerExpr]
 
   member __.TaggedDeserializerVars = taggedDeserializerVars
-  member __.TaggedDeserializers = taggedDeserializers
+  member __.TaggedDeserializers = lazy (taggedDeserializers taggedDeserializerVars)
   member __.UntaggedDeserializerVars = untaggedDeserializerVars
-  member __.UntaggedDeserializers = untaggedDeserializers
+  member __.UntaggedDeserializers = lazy (untaggedDeserializers untaggedDeserializerVars)
   member __.SerializerVars = serializerVars
-  member __.Serializers = serializers
+  member __.Serializers = lazy (serializers serializerVars)
   member __.FieldsFor = fieldsFor <| int idx
 
   static member NewTuple e = NewTuple_ e

@@ -35,7 +35,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
   let runtimeAssembly = typeof<BondTypeProvider>.Assembly
   let ns = "Bond.TypeProvider"
   let ctxt = ProviderImplementation.ProvidedTypesContext.Create(cfg)
-  let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", Some typeof<obj>)
+  let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", None)
   let filename = ctxt.ProvidedStaticParameter("FilePath", typeof<string>)
   let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // TODO former default: , int ProtocolType.MARSHALED_PROTOCOL)
 
@@ -47,30 +47,33 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
 
 
   /// the SchemaDef that we will reflect as provided types
-  let (|SchemaContents|) ([| :? string as filename; :? int as prot |] : obj array) =
-    let uri =
-      if Uri.IsWellFormedUriString(filename, UriKind.Relative) then
-        Uri(Path.Combine(Path.Combine(cfg.ResolutionFolder, filename)))
-      else // note: this just works for full paths even without leading "file:///"
-        Uri(filename)
+  let (|SchemaContents|) (contents : obj array) =
+      match contents with
+      | [| (:? string as filename); (:? ProtocolType as prot) |] ->
+        let uri =
+          if Uri.IsWellFormedUriString(filename, UriKind.Relative) then
+            Uri(Path.Combine(Path.Combine(cfg.ResolutionFolder, filename)))
+          else // note: this just works for full paths even without leading "file:///"
+            Uri(filename)
 
-    // Deserialize the SchemaDef from the Uri using the relevant ITaggedProtocolReader
-    use strm =
-      if uri.IsFile then
-        File.OpenRead(uri.LocalPath) :> Stream
-      else
-        let client = new System.Net.WebClient()
-        let content = client.DownloadData(uri)
-        new MemoryStream(content) :> _
-    if enum prot = ProtocolType.MARSHALED_PROTOCOL then
-      Unmarshal<SchemaDef>.From(new InputStream(strm))
-    else
-      let rdr : ITaggedProtocolReader =
-          match enum prot with
-          | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryReader<InputStream>(new InputStream(strm))
-          | ProtocolType.FAST_PROTOCOL -> upcast new FastBinaryReader<InputStream>(new InputStream(strm))
-          | p -> failwithf "Unrecognized protocol : %A" p
-      Deserialize<SchemaDef>.From(rdr)
+        // Deserialize the SchemaDef from the Uri using the relevant ITaggedProtocolReader
+        use strm =
+          if uri.IsFile then
+            File.OpenRead(uri.LocalPath) :> Stream
+          else
+            let client = new System.Net.WebClient()
+            let content = client.DownloadData(uri)
+            new MemoryStream(content) :> _
+        if prot = ProtocolType.MARSHALED_PROTOCOL then
+          Unmarshal<SchemaDef>.From(new InputStream(strm))
+        else
+          let rdr : ITaggedProtocolReader =
+              match prot with
+              | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryReader<InputStream>(new InputStream(strm))
+              | ProtocolType.FAST_PROTOCOL -> upcast new FastBinaryReader<InputStream>(new InputStream(strm))
+              | p -> failwithf "Unrecognized protocol : %A" p
+          Deserialize<SchemaDef>.From(rdr)
+      | f -> failwithf "unexpected arguments %A" f
 
   do schemaTy.DefineStaticParameters([filename; protTy;], memo (fun tyName (SchemaContents schemaContents) ->
     /// maps struct IDs to provided type
@@ -90,16 +93,15 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
         |> List.filter (fun (_,st) -> st.base_def = null) // we don't currently support inheritance
         |> List.map (fun (i,st) ->
             let tp2 = TP2(schemaContents, uint16 i, tupTys, tp)
-            let reprTy =
-                lazy
-                    tp2.FieldsFor |> List.map (fun fieldInfo -> tp.TypeForBondType fieldInfo.fieldType |> fst)
-                    |> Array.ofList
-                    |> Reflection.FSharpType.MakeTupleType
+            let reprTy = lazy
+              tp2.FieldsFor
+              |> List.map (fun fieldInfo -> tp.TypeForBondType fieldInfo.fieldType |> fst)
+              |> Array.ofList
+              |> Reflection.FSharpType.MakeTupleType
 
-            let stTy = ctxt.ProvidedTypeDefinition(st.metadata.name, Some(typeof<obj>))
+            tupTys.[uint16 i]  <- reprTy
+            let stTy = ctxt.ProvidedTypeDefinition(st.metadata.name, None)
             provTys.[uint16 i] <- stTy
-            tupTys.[uint16 i] <- lazy reprTy.Value
-
 
             stTy.AddMembersDelayed(fun () ->
                 let props =
@@ -107,7 +109,6 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                       let (_,ty) = tp.TypeForBondType fieldInfo.fieldType
                       ctxt.ProvidedProperty(fieldInfo.metadata.name, ty,
                                             getterCode = fun [this] -> QExpr.TupleGet(QExpr.Coerce(this, tupTys.[uint16 i].Value), idx)) :> MemberInfo)
-
                 let createInstance args =
                     List.zip args tp2.FieldsFor
                     |> List.map (fun (arg:Quotations.Expr, f) ->
@@ -125,16 +126,16 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                          ctxt.ProvidedMethod("DeserializeFrom",
                                              [ctxt.ProvidedParameter("reader", typeof<ITaggedProtocolReader>)],
                                              stTy, // isStaticMethod = true,
-                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.TaggedDeserializers, QExpr.Application(QExpr.Var tp2.TaggedDeserializerVars.[uint16 i], rdr)))
+                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.TaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.TaggedDeserializerVars.Value.[uint16 i], rdr)))
                          ctxt.ProvidedMethod("DeserializeFrom",
                                              [ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)],
                                              stTy, // IsStaticMethod = true,
-                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.UntaggedDeserializers, QExpr.Application(QExpr.Var tp2.UntaggedDeserializerVars.[uint16 i], rdr)))
+                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.UntaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.UntaggedDeserializerVars.Value.[uint16 i], rdr)))
                          ctxt.ProvidedMethod("SerializeTo",
                                              [ProvidedParameter("writer", typeof<IProtocolWriter>)],
                                              typeof<unit>,
-                                             invokeCode = fun [this;wrtr] -> QExpr.LetRecursive(tp2.Serializers, QExpr.Application(
-                                                                                                                          QExpr.Application(QExpr.Var tp2.SerializerVars.[uint16 i], wrtr),
+                                             invokeCode = fun [this;wrtr] -> QExpr.LetRecursive(tp2.Serializers.Value, QExpr.Application(
+                                                                                                                          QExpr.Application(QExpr.Var tp2.SerializerVars.Value.[uint16 i], wrtr),
                                                                                                                           QExpr.Coerce(this, tupTys.[uint16 i].Value))))])
             stTy))
     containerTy))

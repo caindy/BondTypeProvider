@@ -11,6 +11,7 @@ group Build
 
 group Main
   nuget Bond.Runtime.CSharp ~> 4
+  nuget Newtonsoft.Json ~> 7
   
 #  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.cmd", Packages: /output/, OS:windows
 #  git https://github.com/fsprojects/FSharp.TypeProviders.StarterPack.git master build:"build.sh", Packages: /output/, OS:mono
