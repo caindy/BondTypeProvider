@@ -11,6 +11,9 @@ open Bond.TypeProvider
 
 // Use type provider to create types from a file with marshaled runtime schema
 type Ty = SchemaTypeProvider<FilePath="unittest.schema.SingleField", Protocol=ProtocolType.COMPACT_PROTOCOL>
+let s = Ty.SingleField("test")
+s.name
+(*
 let mkWriter strm : _ -> IProtocolWriter = function
 | ProtocolType.SIMPLE_PROTOCOL -> upcast new SimpleBinaryWriter<IOutputStream>(strm)
 | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryWriter<IOutputStream>(strm)
@@ -79,7 +82,6 @@ let inline testRoundtripFB (src : 'a) =
 let inline testRoundtripSP (src : 'a) =
     Assert.AreEqual(src, (roundtripSP src : 'a))
 
-    (*
 [<TestFixture>]
 type UnitTest() =
     let initSingleField = Ty.SingleField

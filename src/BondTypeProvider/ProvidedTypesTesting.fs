@@ -559,7 +559,7 @@ type internal Testing() =
                 | _ -> ""
                 |> print
                 print (toString true t)
-                if t.BaseType <> typeof<obj> then
+                if t.BaseType <> null && t.BaseType <> typeof<obj> then
                     print " : "
                     print (toString true t.BaseType)
                 println()

@@ -58,6 +58,9 @@
     <None Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="BondTypeProvider">
+      <HintPath>..\..\bin\BondTypeProvider.dll</HintPath>
+    </Reference>
     <Reference Include="mscorlib" />
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -74,12 +77,6 @@
   </Target>
   -->
   <Import Project="..\..\.paket\paket.targets" />
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\BondTypeProvider\BondTypeProvider.fsproj">
-      <Project>{F6BBD4FA-F3EB-4FA8-BDDB-B8CC4AF9750E}</Project>
-      <Name>BondTypeProvider</Name>
-    </ProjectReference>
-  </ItemGroup>
   <Choose>
     <When Condition="$(TargetFrameworkIdentifier) == '.NETFramework' And ($(TargetFrameworkVersion) == 'v4.0')">
       <ItemGroup>

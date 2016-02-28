@@ -37,7 +37,7 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
   let ctxt = ProviderImplementation.ProvidedTypesContext.Create(cfg)
   let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", Some typeof<obj>)
   let filename = ctxt.ProvidedStaticParameter("FilePath", typeof<string>)
-  let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // TODO former default: , int ProtocolType.MARSHALED_PROTOCOL)
+  let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // TODO default (e.g. ProtocolType.MARSHALED_PROTOCOL)
 
   let helpText = """<summary>Typed representation of a Bond schema</summary>
                     <param name='FilePath'>Bond SchemaDef location</param>
@@ -45,11 +45,10 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
 
   do schemaTy.AddXmlDoc helpText
 
-
   /// the SchemaDef that we will reflect as provided types
   let (|SchemaContents|) (contents : obj array) =
       match contents with
-      | [| (:? string as filename); (:? ProtocolType as prot) |] ->
+      | [| (:? string as filename); (:? int as prot) |] ->
         let uri =
           if Uri.IsWellFormedUriString(filename, UriKind.Relative) then
             Uri(Path.Combine(Path.Combine(cfg.ResolutionFolder, filename)))
@@ -64,11 +63,11 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
             let client = new System.Net.WebClient()
             let content = client.DownloadData(uri)
             new MemoryStream(content) :> _
-        if prot = ProtocolType.MARSHALED_PROTOCOL then
+        if enum prot = ProtocolType.MARSHALED_PROTOCOL then
           Unmarshal<SchemaDef>.From(new InputStream(strm))
         else
           let rdr : ITaggedProtocolReader =
-              match prot with
+              match enum prot with
               | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryReader<InputStream>(new InputStream(strm))
               | ProtocolType.FAST_PROTOCOL -> upcast new FastBinaryReader<InputStream>(new InputStream(strm))
               | p -> failwithf "Unrecognized protocol : %A" p

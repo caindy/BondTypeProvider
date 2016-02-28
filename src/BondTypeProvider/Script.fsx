@@ -27,10 +27,9 @@ let tpns =
   |> Seq.head
   *)
 let bondTpAsm = typeof<BondTypeProvider>.Assembly.FullName
-let args = [|box "../../tests/BondTypeProvider.Tests/unittest.schema.Nullable";
-             box Bond.ProtocolType.MARSHALED_PROTOCOL |]
-let refs = Targets.FSharpCore40Ref
-let system = typeof<obj>.Assembly
-let instance = Testing.GenerateProvidedTypeInstantiation(__SOURCE_DIRECTORY__, bondTpAsm, [refs], BondTypeProvider, args)
+let args = [|box "../../tests/BondTypeProvider.Tests/unittest.schema.SingleField";
+             box <| int Bond.ProtocolType.COMPACT_PROTOCOL |]
+let instance = Testing.GenerateProvidedTypeInstantiation(__SOURCE_DIRECTORY__, bondTpAsm,
+                         Targets.DotNet45FSharp40Refs, BondTypeProvider, args)
 //let instance = tpns.MakeParametricType("SchemaTypeProvider", args)
 instance |> Testing.FormatProvidedType

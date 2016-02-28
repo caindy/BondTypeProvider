@@ -1844,7 +1844,7 @@ type ProvidedTypeDefinition(container:TypeContainer,className : string, baseType
 
     // Attributes, etc..
     override __.GetAttributeFlagsImpl() = adjustTypeAttributes attributes this.IsNested 
-    override this.IsValueTypeImpl() = this.BaseType.IsValueType
+    override this.IsValueTypeImpl() = null <> this.BaseType && this.BaseType.IsValueType
     override __.IsArrayImpl() = false
     override __.IsByRefImpl() = false
     override __.IsPointerImpl() = false
