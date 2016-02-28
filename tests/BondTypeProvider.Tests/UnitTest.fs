@@ -10,10 +10,7 @@ open Bond.IO.Unsafe
 open Bond.TypeProvider
 
 // Use type provider to create types from a file with marshaled runtime schema
-type Ty = SchemaTypeProvider<FilePath="unittest.schema.SingleField", Protocol=ProtocolType.COMPACT_PROTOCOL>
-let s = Ty.SingleField("test")
-s.name
-(*
+type Ty = SchemaTypeProvider<FilePath="unittest.schema.All", Protocol=ProtocolType.COMPACT_PROTOCOL>
 let mkWriter strm : _ -> IProtocolWriter = function
 | ProtocolType.SIMPLE_PROTOCOL -> upcast new SimpleBinaryWriter<IOutputStream>(strm)
 | ProtocolType.COMPACT_PROTOCOL -> upcast new CompactBinaryWriter<IOutputStream>(strm)
@@ -260,4 +257,3 @@ type UnitTest() =
         Assert.AreEqual(src.m_int16, dst.m_int16)
         Assert.AreEqual(src.m_int32, dst.m_int32)
         Assert.AreEqual(src.m_int64, dst.m_int64)
-        *)
