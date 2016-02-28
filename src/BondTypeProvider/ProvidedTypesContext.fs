@@ -409,8 +409,8 @@ type internal ProvidedTypesContext(referencedAssemblyPaths : string list) as thi
     member __.ProvidedLiteralField(fieldName, fieldType, literalValue:obj) = 
       new ProvidedLiteralField(fieldName, fieldType  |> replacer.ConvertDesignTimeTypeToTargetType, literalValue)
 
-    member __.ProvidedParameter(parameterName, parameterType) = 
-      new ProvidedParameter(parameterName, parameterType |> replacer.ConvertDesignTimeTypeToTargetType)
+    member __.ProvidedParameter(parameterName, parameterType, ?optionalValue) = 
+      new ProvidedParameter(parameterName, parameterType |> replacer.ConvertDesignTimeTypeToTargetType, ?optionalValue = optionalValue)
 
     /// Create a new provided property. It is not initially associated with any specific provided type definition.
     ///

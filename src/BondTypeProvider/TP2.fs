@@ -205,11 +205,10 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
     |> dict )
 
   let taggedDeserializers (Lazy (taggedDeserializerVars : IDictionary<uint16, Quotations.Var>)) =
-      [for (KeyValue(idx, deserializerVar)) in taggedDeserializerVars ->
-          let makeVarExprs = [for i in relatedStructs ->
-                                  i,
-                                  fun rdr ->
-                                      QExpr.Application(QExpr.Var taggedDeserializerVars.[i], rdr)] |> dict
+    [for (KeyValue(idx, deserializerVar)) in taggedDeserializerVars ->
+      let makeVarExprs =
+        [for i in relatedStructs -> i, fun rdr -> QExpr.Application(QExpr.Var taggedDeserializerVars.[i], rdr)]
+        |> dict
 
 //                          rdr.ReadStructBegin()
 //                          let rec loop() =
@@ -229,60 +228,60 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
 //          add throwing "else" blocks to "if not ..."
 //          add bitarray writing within loop and checking after
 
-          let reader = Quotations.Var("rdr", typeof<ITaggedProtocolReader>)
+      let reader = Quotations.Var("rdr", typeof<ITaggedProtocolReader>)
 
-          let fieldVarsAndVals = structFieldVarsAndVals idx
+      let fieldVarsAndVals = structFieldVarsAndVals idx
 
-          let expr =
-              let reader = QExpr.Cast<ITaggedProtocolReader>(QExpr.Var reader)
+      let expr =
+        let reader = QExpr.Cast<ITaggedProtocolReader>(QExpr.Var reader)
 
-              let readFieldFns =
-                  fieldsFor (int idx)
-                  |> List.mapi (fun fldIdx fieldInfo ->
-                      let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
-                      let read = tp.TaggedReader fieldInfo.fieldType reader makeVarExprs
-                      fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
-                              let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
-                              let (var,_,_) = fieldVarsAndVals.[fldIdx]
-                              QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (tp.TypeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
-                  |> List.toArray
+        let readFieldFns =
+            fieldsFor (int idx)
+            |> List.mapi (fun fldIdx fieldInfo ->
+                let fn = Quotations.Var(sprintf "read_%s" fieldInfo.metadata.name, typeof<unit->unit>)
+                let read = tp.TaggedReader fieldInfo.fieldType reader makeVarExprs
+                fn, QExpr.Lambda(Quotations.Var("_", typeof<unit>),
+                        let (Quotations.Patterns.Call(None,refSet,[_;_])) = <@ ref 0 := 0 @>
+                        let (var,_,_) = fieldVarsAndVals.[fldIdx]
+                        QExpr.Call(refSet.GetGenericMethodDefinition().MakeGenericMethod(fst (tp.TypeForBondType fieldInfo.fieldType)), [QExpr.Var var; read])))
+            |> List.toArray
 
-              let fieldSwitch =
-                  let tyVar = Quotations.Var("ty", typeof<BondDataType>)
-                  let idVar = Quotations.Var("id", typeof<uint16>)
-                  QExpr.Lambda(tyVar,
-                      QExpr.Lambda(idVar,
-                          let fn =
-                              fieldsFor (int idx)
-                              |> List.mapi (fun fldIdx fieldInfo ->
-                                  fun ty id' next ->
-                                      let id = fieldInfo.id
-                                      // TODO: throw exception if expected and actual type differ?
-                                      QExpr.IfThenElse(<@ %id' = id @>, <@ (%%QExpr.Var (fst readFieldFns.[fldIdx])) () : unit @>, next))
-                              |> List.fold (fun e f ty id -> f ty id (e ty id)) (fun ty _ -> <@@ (%reader).Skip(%ty) @@>)
-                          fn (tyVar |> QExpr.Var |> QExpr.Cast) (idVar |> QExpr.Var |> QExpr.Cast)))
+        let fieldSwitch =
+            let tyVar = Quotations.Var("ty", typeof<BondDataType>)
+            let idVar = Quotations.Var("id", typeof<uint16>)
+            QExpr.Lambda(tyVar,
+                QExpr.Lambda(idVar,
+                    let fn =
+                        fieldsFor (int idx)
+                        |> List.mapi (fun fldIdx fieldInfo ->
+                            fun ty id' next ->
+                                let id = fieldInfo.id
+                                // TODO: throw exception if expected and actual type differ?
+                                QExpr.IfThenElse(<@ %id' = id @>, <@ (%%QExpr.Var (fst readFieldFns.[fldIdx])) () : unit @>, next))
+                        |> List.fold (fun e f ty id -> f ty id (e ty id)) (fun ty _ -> <@@ (%reader).Skip(%ty) @@>)
+                    fn (tyVar |> QExpr.Var |> QExpr.Cast) (idVar |> QExpr.Var |> QExpr.Cast)))
 
-              let body =
-                  <@@ (%reader).ReadStructBegin()
-                      let rec loop() =
-                          let ty,id = RuntimeHelpers.ReadFieldBegin %reader
-                          if ty <> BondDataType.BT_STOP && ty <> BondDataType.BT_STOP_BASE then
-                              (%%fieldSwitch) ty id
-                              (%reader).ReadFieldEnd()
-                              loop()
-                      loop()
-                      (%reader).ReadStructEnd() @@>
+        let body =
+            <@@ (%reader).ReadStructBegin()
+                let rec loop() =
+                    let ty,id = RuntimeHelpers.ReadFieldBegin %reader
+                    if ty <> BondDataType.BT_STOP && ty <> BondDataType.BT_STOP_BASE then
+                        (%%fieldSwitch) ty id
+                        (%reader).ReadFieldEnd()
+                        loop()
+                loop()
+                (%reader).ReadStructEnd() @@>
 
-              readFieldFns
-              |> Array.fold (fun b (v,e) -> QExpr.Let(v,e,b)) body
-              |> simplify
+        readFieldFns
+        |> Array.fold (fun b (v,e) -> QExpr.Let(v,e,b)) body
+        |> simplify
 
-          let deserializerExpr =
-              QExpr.Lambda(reader,
-                  fieldVarsAndVals
-                  |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
+      let deserializerExpr =
+          QExpr.Lambda(reader,
+              fieldVarsAndVals
+              |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
 
-          deserializerVar, deserializerExpr]
+      deserializerVar, deserializerExpr]
   
   let untaggedDeserializerVars = lazy (
     relatedStructs

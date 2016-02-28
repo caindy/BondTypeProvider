@@ -115,23 +115,36 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                             // <@ if (arg :> obj) = null then defaultExpr else arg @>
                             // Note that we can't use the generic equality test at the actual arg type or it will throw a null reference exception, thanks to F#'s non-nullable type checking
                             QExpr.IfThenElse(<@ %%QExpr.Coerce(arg, typeof<obj>) = null @>, f.defaultExpr, arg)
+                            f.defaultExpr
                         else
                             arg)
                     |> TP2.NewTuple
 
+                let deserializeFromTagged (exprs : QExpr list) =
+                  match exprs with
+                  | [rdr] ->
+                    QExpr.LetRecursive(tp2.TaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.TaggedDeserializerVars.Value.[uint16 i], rdr))
+                  | _ -> invalidArg "exprs" <| sprintf "Expected just an ITaggedProtocolReader, got %A" exprs
+
+                let deserializeFromUntagged (exprs : QExpr list) =
+                  match exprs with
+                  | [rdr] ->
+                    QExpr.LetRecursive(tp2.UntaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.UntaggedDeserializerVars.Value.[uint16 i], rdr))
+                  | _ -> invalidArg "exprs" <| sprintf "Expected just an IUntaggedProtocolReader, got %A" exprs
+
                 props @ [ctxt.ProvidedConstructor(
-                            [for (:? PropertyInfo as pi), fi in Seq.zip props tp2.FieldsFor -> ProvidedParameter(pi.Name, pi.PropertyType, optionalValue = fi.defaultValue)],
+                            [for (:? PropertyInfo as pi), fi in Seq.zip props tp2.FieldsFor -> ctxt.ProvidedParameter(pi.Name, pi.PropertyType, fi.defaultValue)],
                             invokeCode = createInstance)
                          ctxt.ProvidedMethod("DeserializeFrom",
                                              [ctxt.ProvidedParameter("reader", typeof<ITaggedProtocolReader>)],
                                              stTy, IsStaticMethod = true,
-                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.TaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.TaggedDeserializerVars.Value.[uint16 i], rdr)))
+                                             invokeCode = deserializeFromTagged)
                          ctxt.ProvidedMethod("DeserializeFrom",
-                                             [ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)],
+                                             [ctxt.ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)],
                                              stTy, IsStaticMethod = true,
-                                             invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.UntaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.UntaggedDeserializerVars.Value.[uint16 i], rdr)))
+                                             invokeCode = deserializeFromUntagged)
                          ctxt.ProvidedMethod("SerializeTo",
-                                             [ProvidedParameter("writer", typeof<IProtocolWriter>)],
+                                             [ctxt.ProvidedParameter("writer", typeof<IProtocolWriter>)],
                                              typeof<unit>,
                                              invokeCode = fun [this;wrtr] -> QExpr.LetRecursive(tp2.Serializers.Value, QExpr.Application(
                                                                                                                           QExpr.Application(QExpr.Var tp2.SerializerVars.Value.[uint16 i], wrtr),

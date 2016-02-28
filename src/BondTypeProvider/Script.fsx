@@ -27,9 +27,10 @@ let tpns =
   |> Seq.head
   *)
 let bondTpAsm = typeof<BondTypeProvider>.Assembly.FullName
-let args = [|box "../../tests/BondTypeProvider.Tests/unittest.schema.SingleField";
+let args = [|box "../../tests/BondTypeProvider.Tests/unittest.schema.All";
              box <| int Bond.ProtocolType.COMPACT_PROTOCOL |]
 let instance = Testing.GenerateProvidedTypeInstantiation(__SOURCE_DIRECTORY__, bondTpAsm,
                          Targets.DotNet45FSharp40Refs, BondTypeProvider, args)
 //let instance = tpns.MakeParametricType("SchemaTypeProvider", args)
+//let i = System.Activator.CreateInstance(instance) :?> BondTypeProvider
 instance |> Testing.FormatProvidedType
