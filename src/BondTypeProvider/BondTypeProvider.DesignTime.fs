@@ -124,11 +124,11 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
                             invokeCode = createInstance)
                          ctxt.ProvidedMethod("DeserializeFrom",
                                              [ctxt.ProvidedParameter("reader", typeof<ITaggedProtocolReader>)],
-                                             stTy, // isStaticMethod = true,
+                                             stTy, IsStaticMethod = true,
                                              invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.TaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.TaggedDeserializerVars.Value.[uint16 i], rdr)))
                          ctxt.ProvidedMethod("DeserializeFrom",
                                              [ProvidedParameter("reader", typeof<IUntaggedProtocolReader>)],
-                                             stTy, // IsStaticMethod = true,
+                                             stTy, IsStaticMethod = true,
                                              invokeCode = fun [rdr] -> QExpr.LetRecursive(tp2.UntaggedDeserializers.Value, QExpr.Application(QExpr.Var tp2.UntaggedDeserializerVars.Value.[uint16 i], rdr)))
                          ctxt.ProvidedMethod("SerializeTo",
                                              [ProvidedParameter("writer", typeof<IProtocolWriter>)],
