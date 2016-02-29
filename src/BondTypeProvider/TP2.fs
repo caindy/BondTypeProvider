@@ -160,6 +160,24 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
 
         serializerVar, serializerExpr]
 
+  (*
+    Current understanding:
+      Get the fieldInfo list for the nth type in the runtime schema
+      Map them to a 3-tuple of Quotations.Var, record constructor, getter
+
+      The type of the record is a *ValueType* ref so all the code here and
+      elsewhere that uses the Var has to use ref cell semantics to read/write it.
+
+      Apparently the idea here is that we can use one code path instead of special casing
+      for each value type that might inhabit `fieldInfo.defaultExpr`; eventually we will see
+      something like:
+      let Var = defaultValue ref //i.e. Expr.NewRecord(value ref, [defaultExpr])
+      Var := some value
+
+      and of course the exported getter, e.g. !Var
+      I guess Expr.NewRecord can be used as a kind of universal way to created a value
+      type on the heap?
+  *)
   let structFieldVarsAndVals idx =
       fieldsFor (int idx)
       |> List.map (fun fieldInfo ->
