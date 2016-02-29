@@ -37,7 +37,8 @@ type public BondTypeProvider(cfg : TypeProviderConfig) =
   let ctxt = ProviderImplementation.ProvidedTypesContext.Create(cfg)
   let schemaTy = ctxt.ProvidedTypeDefinition(runtimeAssembly, ns, "SchemaTypeProvider", Some typeof<obj>)
   let filename = ctxt.ProvidedStaticParameter("FilePath", typeof<string>)
-  let protTy = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>) // TODO default (e.g. ProtocolType.MARSHALED_PROTOCOL)
+  let protTy   = ctxt.ProvidedStaticParameter("Protocol", typeof<ProtocolType>,
+                                              defaultValue = ProtocolType.MARSHALED_PROTOCOL)
 
   let helpText = """<summary>Typed representation of a Bond schema</summary>
                     <param name='FilePath'>Bond SchemaDef location</param>

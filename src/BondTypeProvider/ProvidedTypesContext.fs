@@ -400,8 +400,8 @@ type internal ProvidedTypesContext(referencedAssemblyPaths : string list) as thi
 
 
   /// When making a cross-targeting type provider, use this method instead of the ProvidedParameter constructor from ProvidedTypes
-    member __.ProvidedStaticParameter(parameterName, parameterType) = 
-      new ProvidedStaticParameter(parameterName, parameterType)
+    member __.ProvidedStaticParameter(parameterName, parameterType, ?defaultValue) = 
+      new ProvidedStaticParameter(parameterName, parameterType, ?parameterDefaultValue = defaultValue)
 
     member __.ProvidedField(fieldName, fieldType) = 
       new ProvidedField(fieldName, fieldType  |> replacer.ConvertDesignTimeTypeToTargetType)
