@@ -37,8 +37,6 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{ED8079DD
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "BondTypeProvider.Tests", "tests\BondTypeProvider.Tests\BondTypeProvider.Tests.fsproj", "{55D3F3C0-B5DA-4DB5-89C0-D2F509ACF4D0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GenerateTestAssests", "gen\GenerateTestAssests\GenerateTestAssests.csproj", "{0F273972-3184-41B8-87CF-DF45FC7BEB69}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -52,10 +50,6 @@ Global
 		{55D3F3C0-B5DA-4DB5-89C0-D2F509ACF4D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{55D3F3C0-B5DA-4DB5-89C0-D2F509ACF4D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{55D3F3C0-B5DA-4DB5-89C0-D2F509ACF4D0}.Release|Any CPU.Build.0 = Release|Any CPU
-		{0F273972-3184-41B8-87CF-DF45FC7BEB69}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{0F273972-3184-41B8-87CF-DF45FC7BEB69}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{0F273972-3184-41B8-87CF-DF45FC7BEB69}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{0F273972-3184-41B8-87CF-DF45FC7BEB69}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

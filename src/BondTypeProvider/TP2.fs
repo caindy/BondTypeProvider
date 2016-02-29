@@ -264,7 +264,6 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
 
       let getVals = NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal)
                                                |> List.ofArray)
-
       let setupVars        = QExpr.Sequential(expr, getVals)
       let letBinding       = fun e (var,def,_) -> QExpr.Let(var, def, e)
       let letBindings      = fieldVarsAndVals |> Array.fold letBinding setupVars
