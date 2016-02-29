@@ -210,23 +210,9 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
         [for i in relatedStructs -> i, fun rdr -> QExpr.Application(QExpr.Var taggedDeserializerVars.[i], rdr)]
         |> dict
 
-//                          rdr.ReadStructBegin()
-//                          let rec loop() =
-//                              let ty,id = Helpers.ReadFieldBegin rdr
-//                              if ty <> BondDataType.BT_STOP && ty <> BondDataType.BT_STOP_BASE then
-//                                  if id = 1us then
-//                                      readValue()
-//                                  elif id = 2us then
-//                                      readChildren()
-//                                  else
-//                                      rdr.Skip(ty)
-//                                  rdr.ReadFieldEnd()
-//                                  loop()
-//                          loop()
-
-// TODO: need to handle required fields:
-//          add throwing "else" blocks to "if not ..."
-//          add bitarray writing within loop and checking after
+      // TODO: need to handle required fields:
+      //          add throwing "else" blocks to "if not ..."
+      //          add bitarray writing within loop and checking after
 
       let reader = Quotations.Var("rdr", typeof<ITaggedProtocolReader>)
 
@@ -276,10 +262,13 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
         |> Array.fold (fun b (v,e) -> QExpr.Let(v,e,b)) body
         |> simplify
 
-      let deserializerExpr =
-          QExpr.Lambda(reader,
-              fieldVarsAndVals
-              |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
+      let getVals = NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal)
+                                               |> List.ofArray)
+
+      let setupVars        = QExpr.Sequential(expr, getVals)
+      let letBinding       = fun e (var,def,_) -> QExpr.Let(var, def, e)
+      let letBindings      = fieldVarsAndVals |> Array.fold letBinding setupVars
+      let deserializerExpr = QExpr.Lambda(reader, letBindings)
 
       deserializerVar, deserializerExpr]
   
@@ -291,9 +280,8 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
   let untaggedDeserializers (Lazy (untaggedDeserializerVars : IDictionary<uint16, Quotations.Var>)) =
       [for (KeyValue(idx,deserializerVar)) in untaggedDeserializerVars ->
           let makeVarExprs = [for i in relatedStructs ->
-                                  i,
-                                  fun rdr ->
-                                      QExpr.Application(QExpr.Var untaggedDeserializerVars.[i], rdr)] |> dict
+                                  i, fun rdr -> QExpr.Application(QExpr.Var untaggedDeserializerVars.[i], rdr)]
+                             |> dict
 
           let reader = Quotations.Var("rdr", typeof<IUntaggedProtocolReader>)
 
@@ -329,7 +317,10 @@ type internal TP2 (s : SchemaDef, idx : uint16, tupTys : Dictionary<uint16,Lazy<
           let deserializerExpr =
               QExpr.Lambda(reader,
                   fieldVarsAndVals
-                  |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e)) (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals |> Array.map (fun (_,_,getVal) -> getVal) |> List.ofArray))))
+                  |> Array.fold (fun e (var,def,_) -> QExpr.Let(var, def, e))
+                                (QExpr.Sequential(expr, NewTuple_(fieldVarsAndVals
+                                                                  |> Array.map (fun (_,_,getVal) -> getVal)
+                                                                  |> List.ofArray))))
 
           deserializerVar, deserializerExpr]
 
